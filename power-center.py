@@ -28,6 +28,22 @@ def set_sys_val(path, val):
     subprocess.run(f"echo {val} > {path}", shell=True)
 
 # --- HARDWARE LOGIC ---
+
+def _set_turbo(enabled):
+    val = "0" if enabled else "1"
+    if os.path.exists("/sys/devices/system/cpu/intel_pstate/no_turbo"):
+        subprocess.run(f"echo {val} > /sys/devices/system/cpu/intel_pstate/no_turbo", shell=True)
+    elif os.path.exists("/sys/devices/system/cpu/cpufreq/boost"):
+        val_boost = "1" if enabled else "0"
+        subprocess.run(f"echo {val_boost} > /sys/devices/system/cpu/cpufreq/boost", shell=True)
+
+def _get_turbo():
+    if os.path.exists("/sys/devices/system/cpu/intel_pstate/no_turbo"):
+        return get_sys_val("/sys/devices/system/cpu/intel_pstate/no_turbo") == "0"
+    elif os.path.exists("/sys/devices/system/cpu/cpufreq/boost"):
+        return get_sys_val("/sys/devices/system/cpu/cpufreq/boost") == "1"
+    return True
+
 def get_num_cpus():
     return len(glob.glob("/sys/devices/system/cpu/cpu[0-9]*"))
 
@@ -67,6 +83,18 @@ def set_freq_limit(mhz):
     min_mhz, max_mhz = get_cpu_freq_bounds()
     mhz = max(min_mhz, min(max_mhz, mhz))
     subprocess.run(f"for i in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do [ -f \"$i\" ] && echo {mhz*1000} > \"$i\"; done", shell=True)
+
+
+def _set_audio_powersave(enabled):
+    val = "1" if enabled else "0"
+    subprocess.run(f"for i in /sys/module/snd_*/parameters/power_save; do [ -f \"$i\" ] && echo {val} > \"$i\"; done", shell=True)
+
+def _get_audio_powersave():
+    import glob
+    paths = glob.glob("/sys/module/snd_*/parameters/power_save")
+    if paths:
+        return get_sys_val(paths[0]) == "1"
+    return False
 
 def get_gpu_path():
     for card in ["card1", "card0"]:
@@ -116,21 +144,26 @@ def get_battery():
     return get_sys_val("/sys/class/power_supply/BAT0/capacity")
 
 # Intel RAPL & EPP Helpers
+def _get_rapl_path():
+    import glob
+    paths = glob.glob("/sys/class/powercap/*rapl*0")
+    return paths[0] if paths else "/sys/class/powercap/intel-rapl/intel-rapl:0"
+
 def get_rapl_pl1():
-    val = get_sys_val("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw")
+    val = get_sys_val(f"{_get_rapl_path()}/constraint_0_power_limit_uw")
     return int(val) // 1000000 if val else 0
 
 def set_rapl_pl1(watts):
     watts = max(5, min(115, watts))
-    set_sys_val("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw", watts * 1000000)
+    set_sys_val(f"{_get_rapl_path()}/constraint_0_power_limit_uw", watts * 1000000)
 
 def get_rapl_pl2():
-    val = get_sys_val("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw")
+    val = get_sys_val(f"{_get_rapl_path()}/constraint_1_power_limit_uw")
     return int(val) // 1000000 if val else 0
 
 def set_rapl_pl2(watts):
     watts = max(5, min(115, watts))
-    set_sys_val("/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw", watts * 1000000)
+    set_sys_val(f"{_get_rapl_path()}/constraint_1_power_limit_uw", watts * 1000000)
 
 EPP_PREFERENCES = ["default", "performance", "balance_performance", "balance_power", "power"]
 
@@ -183,6 +216,21 @@ def get_hypr_animations():
     except:
         return False
 
+
+def _get_main_monitor():
+    try:
+        out = run_hyprctl("monitors -j")
+        data = json.loads(out)
+        if data and isinstance(data, list):
+            return data[0]["name"]
+    except:
+        pass
+    return "eDP-1"
+
+def _set_hypr_monitor(fps):
+    mon = _get_main_monitor()
+    run_hyprctl(f'eval \'hl.monitor({{ output = "{mon}", mode = "1920x1080@{fps}", position = "auto", scale = 1 }})\'')
+
 def set_hypr_effects(enabled):
     val = "true" if enabled else "false"
     lua = f"hl.config({{ animations = {{ enabled = {val} }}, decoration = {{ blur = {{ enabled = {val} }}, shadow = {{ enabled = {val} }} }} }})"
@@ -208,15 +256,20 @@ def set_wifi_powersave(s):
     subprocess.run(f"iw dev {iface} set power_save {val}", shell=True)
 
 # Keyboard Backlight Helpers
+def _get_kbd_path():
+    import glob
+    paths = glob.glob("/sys/class/leds/*kbd_backlight*/brightness")
+    return paths[0] if paths else ""
+
 def get_kbd_backlight():
-    path = "/sys/class/leds/dell::kbd_backlight/brightness"
+    path = _get_kbd_path()
     if not os.path.exists(path): return False
     return get_sys_val(path) != "0"
 
 def set_kbd_backlight(s):
-    path = "/sys/class/leds/dell::kbd_backlight/brightness"
+    path = _get_kbd_path()
     if not os.path.exists(path): return
-    max_path = "/sys/class/leds/dell::kbd_backlight/max_brightness"
+    max_path = path.replace("brightness", "max_brightness") if path else ""
     max_val = get_sys_val(max_path) or "1"
     set_sys_val(path, max_val if s else "0")
 
@@ -272,7 +325,7 @@ def get_current_mode():
         return "⚡ AUTO EXTREME (Dinámico)"
     
     epp = get_sys_val("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
-    no_turbo = get_sys_val("/sys/devices/system/cpu/intel_pstate/no_turbo")
+    no_turbo = "0" if _get_turbo() else "1"
     
     num_cpus = get_num_cpus()
     active_cores = get_cores()
@@ -328,7 +381,7 @@ class PowerDashboard:
             time_str = "Lleno"
 
         cpu_w = 0.0
-        rapl_path = "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj"
+        rapl_path = f"{_get_rapl_path()}/energy_uj"
         uj_val = get_sys_val(rapl_path)
         now_time = time.time()
         if uj_val:
@@ -347,8 +400,10 @@ class PowerDashboard:
             if cpu_w > total_w and total_w > 0.1:
                 cpu_w = total_w * 0.4
                 
-        max_b = float(get_sys_val("/sys/class/backlight/intel_backlight/max_brightness") or 100)
-        curr_b = float(get_sys_val("/sys/class/backlight/intel_backlight/brightness") or 10)
+        bl_paths = glob.glob("/sys/class/backlight/*")
+        bl_path = bl_paths[0] if bl_paths else "/sys/class/backlight/intel_backlight"
+        max_b = float(get_sys_val(f"{bl_path}/max_brightness") or 100)
+        curr_b = float(get_sys_val(f"{bl_path}/brightness") or 10)
         pct_b = curr_b / max_b if max_b > 0 else 0.1
         screen_w = 0.8 + (pct_b * 3.2)
 
@@ -463,12 +518,12 @@ def stop_daemon():
 def apply_mode_performance():
     stop_daemon()
     set_hypr_effects(True)
-    run_hyprctl('eval \'hl.monitor({ output = "eDP-1", mode = "1920x1080@60", position = "auto", scale = 1 })\'')
+    _set_hypr_monitor(60)
     set_cores(get_num_cpus())
     set_rapl_pl1(45)
     set_rapl_pl2(65)
     set_epp("performance")
-    subprocess.run("echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo", shell=True)
+    _set_turbo(True)
     subprocess.run("brightnessctl set 100%", shell=True)
     set_kbd_backlight(True)
     set_wifi_powersave(False)
@@ -477,18 +532,18 @@ def apply_mode_performance():
 def apply_mode_extreme():
     stop_daemon()
     set_hypr_effects(False)
-    run_hyprctl('eval \'hl.monitor({ output = "eDP-1", mode = "1920x1080@48", position = "auto", scale = 1 })\'')
+    _set_hypr_monitor(48)
     set_cores(1)
     set_rapl_pl1(5)
     set_rapl_pl2(8)
     set_epp("power")
-    subprocess.run("echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo", shell=True)
+    _set_turbo(False)
     set_freq_limit(800)
     subprocess.run("brightnessctl set 2%", shell=True)
     set_kbd_backlight(False)
     set_wifi_powersave(True)
     subprocess.run("rfkill block bluetooth", shell=True)
-    subprocess.run("echo 1 > /sys/module/snd_hda_intel/parameters/power_save", shell=True)
+    _set_audio_powersave(True)
     subprocess.run("echo 0 > /proc/sys/kernel/nmi_watchdog", shell=True)
     set_aspm_policy("powersupersave")
     subprocess.run("for i in /sys/bus/pci/devices/*/power/control; do echo auto > $i 2>/dev/null; done", shell=True)
@@ -497,12 +552,12 @@ def apply_mode_extreme():
 def apply_mode_restore():
     stop_daemon()
     set_hypr_effects(True)
-    run_hyprctl('eval \'hl.monitor({ output = "eDP-1", mode = "1920x1080@60", position = "auto", scale = 1 })\'')
+    _set_hypr_monitor(60)
     set_cores(get_num_cpus())
     set_rapl_pl1(15)
     set_rapl_pl2(28)
     set_epp("balance_performance")
-    subprocess.run("echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo", shell=True)
+    _set_turbo(True)
     set_freq_limit(2400)
     subprocess.run("brightnessctl set 50%", shell=True)
     set_kbd_backlight(True)
@@ -518,13 +573,13 @@ def daemon_loop():
         f.write(str(os.getpid()))
         
     set_hypr_effects(False)
-    run_hyprctl('eval \'hl.monitor({ output = "eDP-1", mode = "1920x1080@48", position = "auto", scale = 1 })\'')
+    _set_hypr_monitor(48)
     subprocess.run("brightnessctl set 2%", shell=True)
     set_kbd_backlight(False)
     set_rapl_pl1(6)
     set_rapl_pl2(9)
     set_epp("power")
-    subprocess.run("echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo", shell=True)
+    _set_turbo(False)
     set_wifi_powersave(True)
     subprocess.run("rfkill block bluetooth", shell=True)
     set_aspm_policy("powersupersave")
@@ -629,8 +684,8 @@ OPTIONS = [
     {
         "name": "Turbo Boost",
         "type": "toggle",
-        "get": lambda: get_sys_val("/sys/devices/system/cpu/intel_pstate/no_turbo") == "0",
-        "set": lambda s: set_sys_val("/sys/devices/system/cpu/intel_pstate/no_turbo", "0" if s else "1"),
+        "get": lambda: _get_turbo(),
+        "set": lambda s: _set_turbo(s),
         "desc": "Desactivar Turbo evita picos de calor y consumo masivo instantáneo.",
         "safety": "WARN"
     },
@@ -693,8 +748,8 @@ OPTIONS = [
     {
         "name": "Audio Power Save",
         "type": "toggle",
-        "get": lambda: get_sys_val("/sys/module/snd_hda_intel/parameters/power_save") == "1",
-        "set": lambda s: set_sys_val("/sys/module/snd_hda_intel/parameters/power_save", "1" if s else "0"),
+        "get": lambda: _get_audio_powersave(),
+        "set": lambda s: _set_audio_powersave(s),
         "desc": "Suspende el chip de audio tras 1s de inactividad. Evita 'pop' de estática.",
         "safety": "SAFE"
     },
