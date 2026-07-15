@@ -48,10 +48,10 @@ sudo power-center
 
 ### Power Profiles
 
-- ⚡ **PERFORMANCE PROFILE**: Unlocks all CPU cores, unlocks max frequency limits, bumps RAPL limits, enables Turbo Boost, and maximizes brightness.
-- ♻ **RESTORE PROFILE**: A balanced baseline. Medium frequency, medium power limits, balanced CPU EPP.
-- 🔋 **EXTREME PROFILE**: Extreme battery saving. Disables all but 1 core, caps CPU at 800MHz, restricts RAPL limits to 5W/8W, dims screen to 2%, and disables radios.
-- ⚡ **AUTO EXTREME PROFILE**: A smart background daemon. It detaches from the UI and constantly measures `/proc/loadavg`, dynamically scaling your CPU cores (from 1 to 4) and frequency based on system demand. It also automatically adjusts brightness if you open a terminal emulator.
+- ⚡ **PERFORMANCE PROFILE**: Unlocks all CPU cores, unlocks max frequency limits, bumps RAPL limits to maximum hardware bounds, enables Turbo Boost, and maximizes brightness.
+- ♻ **RESTORE PROFILE**: Restores your computer to the original baseline settings captured the first time the app was run.
+- 🔋 **EXTREME PROFILE**: Extreme battery saving. Drops your computer to absolute minimum hardware bounds (minimum cores, minimum frequencies, minimum wattage, minimum brightness) and disables radios.
+- ⚡ **AUTO EXTREME PROFILE**: A smart, un-intrusive background daemon. It scales your CPU cores, frequencies, and brightness proportionally to your hardware bounds based on a 1-minute load average. Quantized 20% steps ensure zero micro-fluctuations, giving you power exactly when you need it while saving maximum energy when you don't.
 
 ## 🤝 How to Contribute
 
