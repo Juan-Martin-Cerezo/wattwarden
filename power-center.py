@@ -792,16 +792,12 @@ def daemon_loop():
                     win_class = json.loads(out).get("class", "").lower()
                     is_heavy_ui = any(x in win_class for x in ["chrome", "firefox", "brave", "zen", "code", "idea", "studio", "cursor"])
                 except: pass
-            max_b = 30 if is_heavy_ui else 10
-            min_b = 5
+            max_b = 30 if is_heavy_ui else 15
+            min_b = 10
             target_brightness = max(min_b, min(max_b, int(min_b + discrete_power * (max_b - min_b))))
             
-            if discrete_power < 0.3:
-                target_epp = "power"
-            elif discrete_power < 0.7:
-                target_epp = "balance_performance"
-            else:
-                target_epp = "performance"
+            # EPP should always be power in Auto Extreme
+            target_epp = "power"
                 
             target_turbo = discrete_power >= 0.8
             
