@@ -1,122 +1,189 @@
 //go:build darwin
 // +build darwin
 
-// Package hal implements hardware abstraction layer controls
 package hal
 
-import "runtime" // Used to query Go runtime information like CPU count
+import (
+	"math"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
 
-// DarwinBackend implements the Backend interface for macOS systems
-// Currently, this acts as a stub to allow compilation and basic UI functionality on macOS
-// without crashing, although most hardware power features require specific macOS APIs.
 type DarwinBackend struct{}
 
-// init automatically registers this backend if compiled on macOS
 func init() { CurrentBackend = &DarwinBackend{} }
 
-// GetOS returns the name of the operating system
-func (b *DarwinBackend) GetOS() string { return "macOS" }
-// GetNumCPUs returns the total number of logical CPUs available on the Mac
-func (b *DarwinBackend) GetNumCPUs() int { return runtime.NumCPU() }
-// GetCores returns the current number of active online cores (stubbed to total)
-func (b *DarwinBackend) GetCores() int { return runtime.NumCPU() }
-// SetCores disables or enables CPU cores (Not yet implemented for macOS)
-func (b *DarwinBackend) SetCores(n int) {}
-// GetFreqLimit returns the max CPU frequency limit (Not yet implemented)
-func (b *DarwinBackend) GetFreqLimit() int { return 0 }
-// SetFreqLimit sets the max CPU frequency limit
-func (b *DarwinBackend) SetFreqLimit(m int) {}
-// GetBatteryPercentage returns 100 as a placeholder
-func (b *DarwinBackend) GetBatteryPercentage() int { return 100 }
-// IsCharging returns true as a placeholder
-func (b *DarwinBackend) IsCharging() bool { return true }
-// GetBatteryTime returns N/A as a placeholder
-func (b *DarwinBackend) GetBatteryTime() string { return "N/A" }
-// GetPowerConsumptionWatts returns 0.0 as a placeholder
-func (b *DarwinBackend) GetPowerConsumptionWatts() float64 { return 0.0 }
-// GetRAPLPL1 returns 0 as a placeholder
-func (b *DarwinBackend) GetRAPLPL1() int { return 0 }
-// SetRAPLPL1 sets RAPL limit (Not yet implemented)
-func (b *DarwinBackend) SetRAPLPL1(w int) {}
-// GetRAPLPL2 returns 0 as a placeholder
-func (b *DarwinBackend) GetRAPLPL2() int { return 0 }
-// SetRAPLPL2 sets RAPL PL2 limit (Not yet implemented)
-func (b *DarwinBackend) SetRAPLPL2(w int) {}
-// GetTurbo returns true as a placeholder
-func (b *DarwinBackend) GetTurbo() bool { return true }
-// SetTurbo toggles CPU boost (Not yet implemented)
-func (b *DarwinBackend) SetTurbo(e bool) {}
-// GetEPP returns default preference
-func (b *DarwinBackend) GetEPP() string { return "default" }
-// SetEPP sets Energy Performance Preference
-func (b *DarwinBackend) SetEPP(p string) {}
-// GetGPUFreq returns 0
-func (b *DarwinBackend) GetGPUFreq() int { return 0 }
-// SetGPUFreq sets max GPU frequency
-func (b *DarwinBackend) SetGPUFreq(m int) {}
-// GetASPM returns default ASPM policy
-func (b *DarwinBackend) GetASPM() string { return "default" }
-// SetASPM sets PCIe ASPM policy
-func (b *DarwinBackend) SetASPM(p string) {}
-// GetWifiPowerSave returns false
-func (b *DarwinBackend) GetWifiPowerSave() bool { return false }
-// SetWifiPowerSave toggles WiFi power saving
-func (b *DarwinBackend) SetWifiPowerSave(e bool) {}
-// GetKbdBacklight returns false
-func (b *DarwinBackend) GetKbdBacklight() bool { return false }
-// SetKbdBacklight toggles keyboard backlight
-func (b *DarwinBackend) SetKbdBacklight(e bool) {}
-// GetAudioPowerSave returns false
-func (b *DarwinBackend) GetAudioPowerSave() bool { return false }
-// SetAudioPowerSave toggles audio power saving
-func (b *DarwinBackend) SetAudioPowerSave(e bool) {}
+func runMacCmd(name string, arg ...string) string {
+	out, err := exec.Command(name, arg...).CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
-// SetBrightnessTarget is a placeholder
+func (b *DarwinBackend) GetOS() string { return "macOS" }
+func (b *DarwinBackend) GetNumCPUs() int { return runtime.NumCPU() }
+func (b *DarwinBackend) GetCores() int { return runtime.NumCPU() }
+func (b *DarwinBackend) SetCores(n int) {}
+
+func (b *DarwinBackend) GetFreqLimit() int { return 0 }
+func (b *DarwinBackend) SetFreqLimit(m int) {} 
+
+func (b *DarwinBackend) GetBatteryPercentage() int {
+	out := runMacCmd("pmset", "-g", "batt")
+	if idx := strings.Index(out, "%"); idx != -1 {
+		start := idx - 3
+		if start < 0 { start = 0 }
+		percStr := strings.TrimSpace(out[start:idx])
+		// Sometimes there's a character or bracket, so we just extract the numbers
+		numStr := ""
+		for _, char := range percStr {
+			if char >= '0' && char <= '9' {
+				numStr += string(char)
+			}
+		}
+		if v, err := strconv.Atoi(numStr); err == nil {
+			return v
+		}
+	}
+	return 100
+}
+
+func (b *DarwinBackend) IsCharging() bool {
+	out := runMacCmd("pmset", "-g", "batt")
+	return strings.Contains(out, "AC Power") || strings.Contains(out, "charging")
+}
+
+func (b *DarwinBackend) GetBatteryTime() string { return "N/A" }
+func (b *DarwinBackend) GetPowerConsumptionWatts() float64 { return 0.0 }
+func (b *DarwinBackend) GetRAPLPL1() int { return 0 }
+func (b *DarwinBackend) SetRAPLPL1(w int) {}
+func (b *DarwinBackend) GetRAPLPL2() int { return 0 }
+func (b *DarwinBackend) SetRAPLPL2(w int) {}
+func (b *DarwinBackend) GetTurbo() bool { return true }
+func (b *DarwinBackend) SetTurbo(e bool) {}
+func (b *DarwinBackend) GetEPP() string { return "default" }
+func (b *DarwinBackend) SetEPP(p string) {}
+func (b *DarwinBackend) GetGPUFreq() int { return 0 }
+func (b *DarwinBackend) SetGPUFreq(m int) {}
+func (b *DarwinBackend) GetASPM() string { return "default" }
+func (b *DarwinBackend) SetASPM(p string) {}
+
+func (b *DarwinBackend) GetWifiPowerSave() bool { return false }
+func (b *DarwinBackend) SetWifiPowerSave(e bool) {}
+func (b *DarwinBackend) GetKbdBacklight() bool { return false }
+func (b *DarwinBackend) SetKbdBacklight(e bool) {}
+func (b *DarwinBackend) GetAudioPowerSave() bool { return false }
+func (b *DarwinBackend) SetAudioPowerSave(e bool) {}
 func (b *DarwinBackend) SetBrightnessTarget(t string) {}
-// SetRefreshRate is a placeholder
 func (b *DarwinBackend) SetRefreshRate(t string) {}
-// SetHyprEffects is a placeholder
 func (b *DarwinBackend) SetHyprEffects(e bool) {}
-// SetNMIWatchdog is a placeholder
 func (b *DarwinBackend) SetNMIWatchdog(e bool) {}
-// SetVMDirty is a placeholder
 func (b *DarwinBackend) SetVMDirty(w int, e int) {}
 
-// GetLCDBrightness returns 100%
 func (b *DarwinBackend) GetLCDBrightness() int { return 100 }
-// SetLCDBrightness sets display brightness
 func (b *DarwinBackend) SetLCDBrightness(percent int) {}
-// GetBluetooth returns true
+
 func (b *DarwinBackend) GetBluetooth() bool { return true }
-// SetBluetooth toggles Bluetooth
 func (b *DarwinBackend) SetBluetooth(enabled bool) {}
-// GetWifiEnable returns true
 func (b *DarwinBackend) GetWifiEnable() bool { return true }
-// SetWifiEnable toggles WiFi
 func (b *DarwinBackend) SetWifiEnable(enabled bool) {}
-// GetAutosuspend returns false
 func (b *DarwinBackend) GetAutosuspend() bool { return false }
-// SetAutosuspend toggles autosuspend
 func (b *DarwinBackend) SetAutosuspend(enabled bool) {}
-// GetWatchdog returns true
 func (b *DarwinBackend) GetWatchdog() bool { return true }
-// SetWatchdog toggles watchdog
 func (b *DarwinBackend) SetWatchdog(enabled bool) {}
-// GetVMWriteback returns 500
 func (b *DarwinBackend) GetVMWriteback() int { return 500 }
-// SetVMWriteback sets dirty writeback centisecs
 func (b *DarwinBackend) SetVMWriteback(centisecs int) {}
-// ProcessPurge is a placeholder
-func (b *DarwinBackend) ProcessPurge() {}
+func (b *DarwinBackend) ProcessPurge() {
+	runMacCmd("sudo", "purge")
+}
 
-// ApplyModePerformance applies high performance mode
-func (b *DarwinBackend) ApplyModePerformance() {}
-// ApplyModeExtreme applies battery saving mode
-func (b *DarwinBackend) ApplyModeExtreme() {}
-// ApplyModeRestore restores default settings
-func (b *DarwinBackend) ApplyModeRestore() {}
-// StartAutoExtremeDaemon starts auto adjustment daemon
-func (b *DarwinBackend) StartAutoExtremeDaemon() {}
-// StopDaemon stops the background daemon
-func (b *DarwinBackend) StopDaemon() {}
+func (b *DarwinBackend) ApplyModePerformance() {
+	runMacCmd("pmset", "-a", "lowpowermode", "0")
+	runMacCmd("pmset", "-a", "tcpkeepalive", "1")
+	runMacCmd("pmset", "-a", "displaysleep", "10")
+}
 
+func (b *DarwinBackend) ApplyModeExtreme() {
+	runMacCmd("pmset", "-a", "lowpowermode", "1")
+	runMacCmd("pmset", "-a", "tcpkeepalive", "0")
+	runMacCmd("pmset", "-a", "displaysleep", "3")
+}
+
+func (b *DarwinBackend) ApplyModeRestore() {
+	runMacCmd("pmset", "-a", "lowpowermode", "0")
+	runMacCmd("pmset", "-a", "tcpkeepalive", "1")
+	runMacCmd("pmset", "-a", "displaysleep", "10")
+}
+
+var daemonMacRunning bool
+var daemonMacQuit chan struct{}
+var daemonMacMutex sync.Mutex
+
+func (b *DarwinBackend) StopDaemon() {
+	daemonMacMutex.Lock()
+	defer daemonMacMutex.Unlock()
+	if daemonMacRunning && daemonMacQuit != nil {
+		close(daemonMacQuit)
+		daemonMacRunning = false
+		daemonMacQuit = nil
+	}
+}
+
+func getMacLoad() float64 {
+	out := runMacCmd("sysctl", "-n", "vm.loadavg")
+	out = strings.Trim(out, "{} ")
+	parts := strings.Fields(out)
+	if len(parts) >= 1 {
+		if v, err := strconv.ParseFloat(parts[0], 64); err == nil {
+			return v / float64(runtime.NumCPU())
+		}
+	}
+	return 0.0
+}
+
+func (b *DarwinBackend) StartAutoExtremeDaemon() {
+	b.StopDaemon()
+	
+	daemonMacMutex.Lock()
+	daemonMacQuit = make(chan struct{})
+	daemonMacRunning = true
+	daemonMacMutex.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		applyLogic := func() {
+			if b.IsCharging() {
+				b.ApplyModePerformance()
+			} else {
+				powerLevel := getMacLoad()
+				if powerLevel > 1.0 { powerLevel = 1.0 }
+				
+				discretePower := math.Round(powerLevel * 3) / 3.0
+				
+				if discretePower < 0.6 {
+					runMacCmd("pmset", "-a", "lowpowermode", "1")
+				} else {
+					runMacCmd("pmset", "-a", "lowpowermode", "0")
+				}
+			}
+		}
+
+		applyLogic()
+
+		for {
+			select {
+			case <-ticker.C:
+				applyLogic()
+			case <-daemonMacQuit:
+				return
+			}
+		}
+	}()
+}
