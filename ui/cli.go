@@ -140,16 +140,16 @@ func (d *Dashboard) drawUI() {
 	headerStyle := tcell.StyleDefault.Foreground(tcell.ColorYellow).Bold(true) // Yellow category headers
 
 	asciiArt := []string{ // The top logo
-		` __      __ ____  _   _______ _______       __  __  ______ _____  `,
-		` \ \    / // __ \| | |__   __|__   __|/\   |  \/  ||  ____|  __ \ `,
-		`  \ \  / /| |  | | |    | |     | |  /  \  | \  / || |__  | |__) |`,
-		`   \ \/ / | |  | | |    | |     | | / /\ \ | |\/| ||  __| |  _  / `,
-		`    \  /  | |__| | |____| |     | |/ ____ \| |  | || |____| | \ \ `,
-		`     \/    \____/|______|_|     |_/_/    \_\_|  |_||______|_|  \_\`,
+		` __        ___  _____ _______        ___    ____  ____  _____ _   _ `,
+		` \ \      / / \|_   _|_   _\ \      / / \  |  _ \|  _ \| ____| \ | |`,
+		`  \ \ /\ / / _ \ | |   | |  \ \ /\ / / _ \ | |_) | | | |  _| |  \| |`,
+		`   \ V  V / ___ \| |   | |   \ V  V / ___ \|  _ <| |_| | |___| |\  |`,
+		`    \_/\_/_/   \_\_|   |_|    \_/\_/_/   \_\_| \_\____/|_____|_| \_|`,
+		`                                                                    `,
 	}
 	
 	artY := 1 // Top margin
-	artX := (w - 64) / 2 // Center horizontally (64 is logo width)
+	artX := (w - 68) / 2 // Center horizontally (68 is logo width)
 	if artX < 1 { artX = 1 } // Prevent drawing off-screen
 	
 	for i, line := range asciiArt { // Draw each line of the logo
