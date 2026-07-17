@@ -4,7 +4,9 @@
 package hal // Hardware Abstraction Layer for Linux
 
 import (
+	"encoding/json" // JSON library for parsing hyprctl output
 	"fmt" // Formatting library for string manipulation
+	"math" // Math library for calculations
 	"os" // OS library to read and write files
 	"os/exec" // Exec library to run shell commands
 	"path/filepath" // Filepath library to find files via Glob
@@ -612,11 +614,83 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 			if b.IsCharging() { // If plugged in
 				b.ApplyModePerformance() // Ramp up performance
 			} else {
-				if b.GetBatteryPercentage() < 20 { // If battery critical
-					b.ApplyModeExtreme() // Go into extreme saving
-				} else { // If battery normal
-					b.ApplyModeRestore() // Run normally
+				// Read /proc/loadavg
+				loadAvgStr := readSys("/proc/loadavg")
+				parts := strings.Fields(loadAvgStr)
+				load := 0.0
+				if len(parts) > 0 {
+					load, _ = strconv.ParseFloat(parts[0], 64)
 				}
+				
+				// Map load to 0.0 - 1.0 scale
+				powerLevel := load / float64(b.GetNumCPUs())
+				if powerLevel > 1.0 { powerLevel = 1.0 }
+				
+				// Quantize into 4 steps: 0, 0.33, 0.66, 1.0
+				discretePower := math.Round(powerLevel * 3) / 3.0
+				
+				// Calculate bounds (40% of hardware max)
+				minCPU, hwMaxCPU := b.GetCPUFreqBounds()
+				maxCPU := int(float64(minCPU) + float64(hwMaxCPU-minCPU)*0.4)
+				
+				minGPU, hwMaxGPU := b.GetGPUBounds()
+				maxGPU := int(float64(minGPU) + float64(hwMaxGPU-minGPU)*0.4)
+				
+				minW, hwMaxW := b.GetRAPLBounds()
+				maxW := int(float64(minW) + float64(hwMaxW-minW)*0.4)
+				
+				maxCores := b.GetNumCPUs() / 2
+				if maxCores < 1 { maxCores = 1 }
+				
+				targetCores := int(1.0 + discretePower * float64(maxCores - 1))
+				if targetCores < 1 { targetCores = 1 }
+				
+				targetCPU := int(float64(minCPU) + discretePower * float64(maxCPU - minCPU))
+				targetGPU := int(float64(minGPU) + discretePower * float64(maxGPU - minGPU))
+				targetRAPL := int(float64(minW) + discretePower * float64(maxW - minW))
+				
+				// Check heavy UI via Hyprland
+				isHeavyUI := false
+				if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "" {
+					out := runCmd("hyprctl activewindow -j")
+					var win struct { Class string `json:"class"` }
+					json.Unmarshal([]byte(out), &win)
+					class := strings.ToLower(win.Class)
+					for _, h := range []string{"chrome", "firefox", "brave", "zen", "code", "idea", "studio", "cursor"} {
+						if strings.Contains(class, h) {
+							isHeavyUI = true
+							break
+						}
+					}
+				}
+				
+				maxB := 15
+				if isHeavyUI { maxB = 30 }
+				minB := 10
+				targetBrightness := int(float64(minB) + discretePower * float64(maxB - minB))
+				if targetBrightness > maxB { targetBrightness = maxB }
+				if targetBrightness < minB { targetBrightness = minB }
+				
+				targetEPP := "power"
+				targetTurbo := discretePower >= 0.8
+				
+				// Apply settings dynamically
+				b.SetCores(targetCores)
+				b.SetFreqLimit(targetCPU)
+				b.SetGPUFreq(targetGPU)
+				b.SetRAPLPL1(targetRAPL)
+				b.SetRAPLPL2(targetRAPL)
+				b.SetEPP(targetEPP)
+				b.SetTurbo(targetTurbo)
+				b.SetLCDBrightness(targetBrightness)
+				
+				b.SetASPM("powersave") 
+				b.SetWifiPowerSave(true)
+				b.SetKbdBacklight(false)
+				b.SetAudioPowerSave(true)
+				b.SetAutosuspend(true)
+				b.SetWatchdog(false)
+				b.SetVMWriteback(6000)
 			}
 		}
 
