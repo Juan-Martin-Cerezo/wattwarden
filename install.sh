@@ -3,7 +3,7 @@
 # Terminate if any error occurs
 set -e
 
-VERSION="v1.0.2"
+VERSION="v1.0.3"
 REPO="Juan-Martin-Cerezo/wattwarden"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="wattwarden"
@@ -28,6 +28,7 @@ esac
 ARCH="$(uname -m)"
 case "${ARCH}" in
   x86_64*)    ARCH_NAME=amd64;;
+  i386*|i686*) ARCH_NAME=386;;
   aarch64*)   ARCH_NAME=arm64;;
   arm64*)     ARCH_NAME=arm64;;
   *)          echo "❌ Error: Unsupported architecture: ${ARCH}"; exit 1;;
