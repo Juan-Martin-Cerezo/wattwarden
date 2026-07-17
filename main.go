@@ -19,7 +19,6 @@ func main() { // The entry point of the VoltTamer application
 	}
 	
 	if os.Getenv("VOLTTAMER_DAEMON") == "1" || (len(os.Args) > 1 && os.Args[1] == "--daemon") { // Checks if the program was launched in daemon mode via Env Var or CLI argument
-		hal.CurrentBackend.StartAutoExtremeDaemon() // Starts the background daemon that adapts the system to the user's hardware usage
 		return // Exits the main function since the daemon blocks or runs until killed
 	}
 	
