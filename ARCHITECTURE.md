@@ -12,10 +12,14 @@ WattWarden uses a highly modular, decoupled architecture focused on performance,
 
 ```
 wattwarden/
-├── main.go               # Entry point, parses flags (like --daemon) and injects backend
+├── main.go               # Entry point, verifies permissions and injects backend
+├── install.sh            # Universal installation script (detects OS and 32/64-bit architectures)
+├── ARCHITECTURE.md       # Architecture specification
+├── README.md             # Project user guide
 ├── hal/                  # Hardware Abstraction Layer
 │   ├── backend.go        # Defines the `Backend` interface that all OS-specific files must implement
-│   ├── backend_linux.go  # Linux implementation using sysfs
+│   ├── backend_linux.go  # Linux implementation using sysfs and uevent fallbacks
+│   ├── backend_linux_test.go # Unit tests verifying Linux hardware getters
 │   ├── backend_darwin.go # macOS native implementation (pmset)
 │   └── backend_windows.go# Windows native implementation (powercfg, WMI)
 └── ui/                   # Terminal User Interface
@@ -29,9 +33,24 @@ The `Backend` interface dictates what actions a platform *must* support, such as
 - `GetNumCPUs() int`
 - `SetFreqLimit(mhz int)`
 - `GetBatteryPercentage() int`
+- `GetPowerConsumptionWatts() float64`
 - `ApplyModeExtreme()`
 
 Cuando la aplicación arranca, `hal.CurrentBackend` es inyectado gracias a los build tags de Go (`//go:build linux`, `//go:build windows`, `//go:build darwin`). Esto significa que `main.go` y la Interfaz Gráfica (`ui/cli.go`) nunca necesitan saber en qué sistema operativo están corriendo.
+
+#### Robust Battery & Power Resolution (Linux)
+In standard Linux systems, hardware directories can change across vendors. To handle this dynamically without hardcoded assumptions, the Linux backend implements:
+* **Dynamic Battery Directory Lookup**: Scans for standard directories (`BAT0`, `BAT1`, `BAT2`, `BATT`) using file statistics, and falls back to listing all `/sys/class/power_supply/*` interfaces and checking if their `type` file contains `"Battery"`.
+* **Multi-Format Power Metric Resolution**:
+  1. Tries reading the standard `power_now` (microwatts) file.
+  2. If missing, falls back to `current_now` (microamperes) * `voltage_now` (microvolts) computation.
+  3. **uevent Parsing Fallback**: If separate files are missing or restricted, parses the unified `/sys/class/power_supply/BAT*/uevent` file for properties (`POWER_SUPPLY_POWER_NOW`, `POWER_SUPPLY_CURRENT_NOW`, `POWER_SUPPLY_VOLTAGE_NOW`).
+  4. **Absolute Value Normalization**: Applies absolute value conversions (`math.Abs`) to resolve issues where ACPI drivers return negative numbers while discharging.
+
+### Multi-Architecture & 32-bit Support
+WattWarden compiles to native machine binaries with no external runtime library dependencies. In addition to 64-bit platforms (amd64, arm64), the build system generates static binaries for **32-bit x86 Linux (i386/i686)**, allowing lightweight execution on legacy hardware (e.g. running MX Linux 32-bit).
+
+The automated `install.sh` script queries `uname -m` and dynamically maps old architectures like `i386`/`i686` to the Go 32-bit target (`386`).
 
 ### The User Interface (UI)
 The `ui.Dashboard` struct handles the presentation layer using `tcell`.
