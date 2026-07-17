@@ -21,7 +21,7 @@ For Linux (Intel, AMD, or ARM) and macOS (Intel or Apple Silicon M1/M2/M3), you 
 *Note: Ensure you have `curl` or `wget` installed on your system (e.g., `sudo apt install curl` on Ubuntu/Debian).*
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
 ```
 
 This script will automatically detect your operating system and processor architecture, download the correct binary, and install it globally.
