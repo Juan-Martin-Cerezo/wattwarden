@@ -13,7 +13,10 @@ WattWarden uses a highly modular, decoupled architecture focused on performance,
 ```
 wattwarden/
 ├── main.go               # Entry point, verifies permissions and injects backend
+├── privilege_unix.go     # Unix root privilege check
+├── privilege_windows.go  # Windows administrator privilege check
 ├── install.sh            # Universal installation script (detects OS and 32/64-bit architectures)
+├── .github/workflows/release.yml # Builds and publishes tagged releases
 ├── ARCHITECTURE.md       # Architecture specification
 ├── README.md             # Project user guide
 ├── hal/                  # Hardware Abstraction Layer

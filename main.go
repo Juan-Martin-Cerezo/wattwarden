@@ -13,8 +13,8 @@ func main() { // The entry point of the WattWarden application
 		return // Exits the program safely without panicking
 	}
 	
-	if os.Geteuid() != 0 { // Checks the Effective User ID to verify if the user is root (Administrator)
-		fmt.Println("Error: You must run this program as administrator (root/sudo) to be able to change system frequencies and parameters!") // Explains why root is needed in English
+	if !hasPrivileges() { // Checks whether the process has the required system privileges
+		fmt.Println("Error: You must run this program with administrator/root privileges to change system power settings.") // Explains why elevated privileges are required
 		os.Exit(1) // Exits the program with a non-zero status indicating an error
 	}
 	

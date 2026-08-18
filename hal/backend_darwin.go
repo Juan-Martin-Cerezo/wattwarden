@@ -6,6 +6,7 @@ package hal
 import (
 	"math"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,6 +24,16 @@ func runMacCmd(name string, arg ...string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func parseMacFloat(output, label string) float64 {
+	re := regexp.MustCompile(label + `[: ]+(-?[0-9]+(?:\.[0-9]+)?)`)
+	match := re.FindStringSubmatch(output)
+	if len(match) != 2 {
+		return 0
+	}
+	value, _ := strconv.ParseFloat(match[1], 64)
+	return value
 }
 
 func (b *DarwinBackend) GetOS() string { return "macOS" }
@@ -55,11 +66,30 @@ func (b *DarwinBackend) GetBatteryPercentage() int {
 
 func (b *DarwinBackend) IsCharging() bool {
 	out := runMacCmd("pmset", "-g", "batt")
-	return strings.Contains(out, "AC Power") || strings.Contains(out, "charging")
+	return strings.Contains(out, "AC Power") && !strings.Contains(out, "discharging")
 }
 
-func (b *DarwinBackend) GetBatteryTime() string { return "N/A" }
-func (b *DarwinBackend) GetPowerConsumptionWatts() float64 { return 0.0 }
+func (b *DarwinBackend) GetBatteryTime() string {
+	out := runMacCmd("pmset", "-g", "batt")
+	match := regexp.MustCompile(`([0-9]+:[0-9]+) remaining`).FindStringSubmatch(out)
+	if len(match) == 2 {
+		return match[1]
+	}
+	if b.IsCharging() {
+		return "Charging"
+	}
+	return "Calculating..."
+}
+
+func (b *DarwinBackend) GetPowerConsumptionWatts() float64 {
+	out := runMacCmd("ioreg", "-rn", "AppleSmartBattery")
+	current := math.Abs(parseMacFloat(out, `"Current" =`))
+	voltage := parseMacFloat(out, `"Voltage" =`)
+	if current == 0 || voltage == 0 {
+		return 0
+	}
+	return current * voltage / 1000000.0
+}
 func (b *DarwinBackend) GetRAPLPL1() int { return 0 }
 func (b *DarwinBackend) SetRAPLPL1(w int) {}
 func (b *DarwinBackend) GetRAPLPL2() int { return 0 }
@@ -99,7 +129,7 @@ func (b *DarwinBackend) SetWatchdog(enabled bool) {}
 func (b *DarwinBackend) GetVMWriteback() int { return 500 }
 func (b *DarwinBackend) SetVMWriteback(centisecs int) {}
 func (b *DarwinBackend) ProcessPurge() {
-	runMacCmd("sudo", "purge")
+	runMacCmd("purge")
 }
 
 func (b *DarwinBackend) ApplyModePerformance() {

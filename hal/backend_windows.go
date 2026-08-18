@@ -77,8 +77,33 @@ func (b *WindowsBackend) IsCharging() bool {
 	return true
 }
 
-func (b *WindowsBackend) GetBatteryTime() string { return "N/A" }
-func (b *WindowsBackend) GetPowerConsumptionWatts() float64 { return 0.0 }
+func (b *WindowsBackend) GetBatteryTime() string {
+	sps := getPowerStatus()
+	if sps == nil {
+		return "Calculating..."
+	}
+	if sps.ACLineStatus == 1 {
+		return "Charging"
+	}
+	if sps.BatteryLifeTime == 0 || sps.BatteryLifeTime == 0xFFFFFFFF {
+		return "Calculating..."
+	}
+	return fmt.Sprintf("%dh %02dm", sps.BatteryLifeTime/3600, (sps.BatteryLifeTime%3600)/60)
+}
+
+func (b *WindowsBackend) GetPowerConsumptionWatts() float64 {
+	out := runWinCmd("powershell", "-NoProfile", "-Command", "(Get-CimInstance -Namespace root\\wmi -ClassName BatteryStatus | Select-Object -First 1).PowerOnline, (Get-CimInstance -Namespace root\\wmi -ClassName BatteryStatus | Select-Object -First 1).Voltage, (Get-CimInstance -Namespace root\\wmi -ClassName BatteryStatus | Select-Object -First 1).DischargeRate")
+	lines := strings.Fields(out)
+	if len(lines) < 3 || lines[0] != "False" {
+		return 0
+	}
+	voltage, voltageErr := strconv.ParseFloat(lines[1], 64)
+	discharge, dischargeErr := strconv.ParseFloat(lines[2], 64)
+	if voltageErr != nil || dischargeErr != nil {
+		return 0
+	}
+	return voltage * discharge / 1000000.0
+}
 func (b *WindowsBackend) GetRAPLPL1() int { return 0 }
 func (b *WindowsBackend) SetRAPLPL1(w int) {}
 func (b *WindowsBackend) GetRAPLPL2() int { return 0 }
@@ -134,10 +159,15 @@ func (b *WindowsBackend) ProcessPurge() {}
 
 // Powercfg helper
 func setWinProcThrottle(maxPercent int) {
-	// scheme_current, sub_processor, PROCTHROTTLEMAX
+	if maxPercent < 1 {
+		maxPercent = 1
+	}
+	if maxPercent > 100 {
+		maxPercent = 100
+	}
 	runWinCmd("powercfg", "-setacvalueindex", "SCHEME_CURRENT", "SUB_PROCESSOR", "PROCTHROTTLEMAX", strconv.Itoa(maxPercent))
 	runWinCmd("powercfg", "-setdcvalueindex", "SCHEME_CURRENT", "SUB_PROCESSOR", "PROCTHROTTLEMAX", strconv.Itoa(maxPercent))
-	runWinCmd("powercfg", "-setactive", "SCHEME_CURRENT") // Apply changes
+	runWinCmd("powercfg", "-setactive", "SCHEME_CURRENT")
 }
 
 func (b *WindowsBackend) ApplyModePerformance() {

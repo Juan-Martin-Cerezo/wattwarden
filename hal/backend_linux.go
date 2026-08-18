@@ -702,6 +702,49 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
+		applyBrightness := func() {
+			if b.IsCharging() {
+				return
+			}
+
+			loadAvgStr := readSys("/proc/loadavg")
+			parts := strings.Fields(loadAvgStr)
+			load := 0.0
+			if len(parts) > 0 {
+				load, _ = strconv.ParseFloat(parts[0], 64)
+			}
+
+			activeClass := ""
+			if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "" {
+				out := runCmd("hyprctl activewindow -j")
+				var win struct{ Class string `json:"class"` }
+				json.Unmarshal([]byte(out), &win)
+				activeClass = strings.ToLower(win.Class)
+			}
+
+			targetBrightness := 10
+			isTerminal := activeClass == "" ||
+				strings.Contains(activeClass, "kitty") ||
+				strings.Contains(activeClass, "foot") ||
+				strings.Contains(activeClass, "alacritty") ||
+				strings.Contains(activeClass, "wezterm")
+			if isTerminal {
+				if load > 1.5 {
+					targetBrightness = 15
+				}
+			} else if load > 2.0 {
+				targetBrightness = 30
+			} else if load > 0.8 {
+				targetBrightness = 20
+			} else {
+				targetBrightness = 12
+			}
+
+			if b.GetLCDBrightness() != targetBrightness {
+				b.SetLCDBrightness(targetBrightness)
+			}
+		}
+
 		// Helper to apply logic based on battery state
 		applyLogic := func() {
 			if b.IsCharging() { // If plugged in
@@ -742,28 +785,6 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 				targetGPU := int(float64(minGPU) + discretePower * float64(maxGPU - minGPU))
 				targetRAPL := int(float64(minW) + discretePower * float64(maxW - minW))
 				
-				// Check heavy UI via Hyprland
-				isHeavyUI := false
-				if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "" {
-					out := runCmd("hyprctl activewindow -j")
-					var win struct { Class string `json:"class"` }
-					json.Unmarshal([]byte(out), &win)
-					class := strings.ToLower(win.Class)
-					for _, h := range []string{"chrome", "firefox", "brave", "zen", "code", "idea", "studio", "cursor"} {
-						if strings.Contains(class, h) {
-							isHeavyUI = true
-							break
-						}
-					}
-				}
-				
-				maxB := 15
-				if isHeavyUI { maxB = 30 }
-				minB := 10
-				targetBrightness := int(float64(minB) + discretePower * float64(maxB - minB))
-				if targetBrightness > maxB { targetBrightness = maxB }
-				if targetBrightness < minB { targetBrightness = minB }
-				
 				targetEPP := "power"
 				targetTurbo := discretePower >= 0.8
 				
@@ -775,7 +796,6 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 				b.SetRAPLPL2(targetRAPL)
 				b.SetEPP(targetEPP)
 				b.SetTurbo(targetTurbo)
-				b.SetLCDBrightness(targetBrightness)
 				
 				b.SetASPM("powersave") 
 				b.SetWifiPowerSave(true)
@@ -787,13 +807,19 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 			}
 		}
 
+		brightnessTicker := time.NewTicker(500 * time.Millisecond)
+		defer brightnessTicker.Stop()
+
 		// Run immediately the first time
 		applyLogic()
+		applyBrightness()
 
 		for {
 			select {
 			case <-ticker.C:
 				applyLogic()
+			case <-brightnessTicker.C:
+				applyBrightness()
 			case <-daemonQuit:
 				return // Exit goroutine
 			}

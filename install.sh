@@ -3,20 +3,13 @@
 # Terminate if any error occurs
 set -e
 
-VERSION="v1.0.3"
 REPO="Juan-Martin-Cerezo/wattwarden"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="wattwarden"
 
 echo "⚡ Starting WattWarden installation..."
 
-# 1. Verify if running as root
-if [[ $EUID -ne 0 ]]; then
-   echo "❌ Error: This script must be run as root (with sudo)."
-   exit 1
-fi
-
-# 2. Detect Operating System
+# 1. Detect Operating System
 OS="$(uname -s)"
 case "${OS}" in
   Linux*)     OS_NAME=linux;;
@@ -24,7 +17,7 @@ case "${OS}" in
   *)          echo "❌ Error: Unsupported OS: ${OS}"; exit 1;;
 esac
 
-# 3. Detect Architecture
+# 2. Detect Architecture
 ARCH="$(uname -m)"
 case "${ARCH}" in
   x86_64*)    ARCH_NAME=amd64;;
@@ -36,13 +29,12 @@ esac
 
 echo "🔎 Detected system: ${OS_NAME} (${ARCH_NAME})"
 
-# 4. Build Download URL
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}"
+# 3. Build the latest GitHub release URL
+DOWNLOAD_URL="${DOWNLOAD_URL:-https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}}"
+TMP_FILE="$(mktemp)"
+trap 'rm -f "${TMP_FILE}"' EXIT
 
-# 5. Download using curl or wget
-echo "⬇️ Downloading WattWarden ${VERSION}..."
-TMP_FILE="/tmp/${BINARY_NAME}"
-
+# 4. Download using curl or wget
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_FILE}"
 elif command -v wget >/dev/null 2>&1; then
@@ -52,10 +44,15 @@ else
   exit 1
 fi
 
-# 6. Install Binary
-echo "📦 Installing to ${INSTALL_DIR}..."
-mv "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
-chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+# 5. Install the binary with elevated permissions when needed
+if [[ $EUID -eq 0 || -w "${INSTALL_DIR}" ]]; then
+  install -Dm755 "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
+elif command -v sudo >/dev/null 2>&1; then
+  sudo install -Dm755 "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
+else
+  echo "❌ Error: Root privileges or sudo are required to install to ${INSTALL_DIR}."
+  exit 1
+fi
 
 echo "✅ Success! WattWarden has been installed."
 echo "👉 You can now run it by typing: sudo wattwarden"

@@ -24,7 +24,7 @@ For Linux (Intel, AMD, or ARM) and macOS (Intel or Apple Silicon M1/M2/M3), you 
 curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
 ```
 
-This script will automatically detect your operating system and processor architecture, download the correct binary, and install it globally.
+This script automatically detects your operating system and processor architecture, downloads the matching asset from the latest GitHub release, and installs it globally.
 
 **How to run:**
 Because the program directly controls hardware boundaries, simply run it in your terminal with `sudo`:
@@ -41,6 +41,8 @@ Windows users do not need to use the terminal. Just follow these steps:
 3. Save it to your Desktop or a folder of your choice.
 4. **Right-click** on the `.exe` file and select **"Run as administrator"**. 
 *(Administrator privileges are required to change system power profiles and frequencies).*
+
+On macOS and Windows, WattWarden uses the native power-management APIs available on the host. Controls that the operating system does not expose remain unavailable rather than being simulated.
 
 ---
 
