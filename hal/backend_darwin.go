@@ -66,7 +66,7 @@ func (b *DarwinBackend) GetBatteryPercentage() int {
 
 func (b *DarwinBackend) IsCharging() bool {
 	out := runMacCmd("pmset", "-g", "batt")
-	return strings.Contains(out, "AC Power") || strings.Contains(out, "charging")
+	return strings.Contains(out, "AC Power") && !strings.Contains(out, "discharging")
 }
 
 func (b *DarwinBackend) GetBatteryTime() string {

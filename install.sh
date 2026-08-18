@@ -4,7 +4,7 @@
 set -e
 
 REPO="Juan-Martin-Cerezo/wattwarden"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="wattwarden"
 
 echo "⚡ Starting WattWarden installation..."
@@ -30,7 +30,7 @@ esac
 echo "🔎 Detected system: ${OS_NAME} (${ARCH_NAME})"
 
 # 3. Build the latest GitHub release URL
-DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}"
+DOWNLOAD_URL="${DOWNLOAD_URL:-https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}}"
 TMP_FILE="$(mktemp)"
 trap 'rm -f "${TMP_FILE}"' EXIT
 
@@ -45,7 +45,7 @@ else
 fi
 
 # 5. Install the binary with elevated permissions when needed
-if [[ $EUID -eq 0 ]]; then
+if [[ $EUID -eq 0 || -w "${INSTALL_DIR}" ]]; then
   install -Dm755 "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
 elif command -v sudo >/dev/null 2>&1; then
   sudo install -Dm755 "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"

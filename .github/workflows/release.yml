@@ -1,6 +1,7 @@
 name: release
 
 on:
+  pull_request:
   push:
     tags:
       - 'v*.*.*'
@@ -9,7 +10,46 @@ permissions:
   contents: write
 
 jobs:
+  native-tests:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run native tests
+        run: go test ./...
+      - name: Build native binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags='-s -w' .
+      - name: Verify local Linux installer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          tmp_dir=$(mktemp -d)
+          trap 'rm -rf "$tmp_dir"' EXIT
+          mkdir -p "$tmp_dir/bin"
+          DOWNLOAD_URL="file://${GITHUB_WORKSPACE}/wattwarden" INSTALL_DIR="$tmp_dir/bin" bash ./install.sh
+          test -x "$tmp_dir/bin/wattwarden"
+          file "$tmp_dir/bin/wattwarden" | grep -E 'ELF 64-bit.*x86-64'
+
   release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: native-tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
