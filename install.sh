@@ -46,9 +46,13 @@ fi
 
 # 5. Install the binary with elevated permissions when needed
 if [[ $EUID -eq 0 || -w "${INSTALL_DIR}" ]]; then
-  install -Dm755 "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
+  mkdir -p "${INSTALL_DIR}"
+  cp "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
+  chmod 755 "${INSTALL_DIR}/${BINARY_NAME}"
 elif command -v sudo >/dev/null 2>&1; then
-  sudo install -Dm755 "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
+  sudo mkdir -p "${INSTALL_DIR}"
+  sudo cp "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
+  sudo chmod 755 "${INSTALL_DIR}/${BINARY_NAME}"
 else
   echo "❌ Error: Root privileges or sudo are required to install to ${INSTALL_DIR}."
   exit 1

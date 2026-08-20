@@ -53,6 +53,9 @@ type Backend interface {
 	SetNMIWatchdog(enabled bool) // Legacy alias for setting NMI Watchdog
 	SetVMDirty(writeback int, expire int) // Advanced configuration for VM dirty ratios
 
+	GetAutoBrightness() bool // Returns true if auto-brightness is enabled during Auto Extreme Mode
+	SetAutoBrightness(enabled bool) // Enables or disables auto-brightness in Auto Extreme Mode
+	IsDaemonRunning() bool // Returns true if the background daemon is active
 	ApplyModePerformance() // Applies a High Performance profile to all hardware components
 	ApplyModeExtreme() // Applies the absolute minimum values to all hardware to maximize battery life
 	ApplyModeRestore() // Restores the hardware to its default factory/OS state

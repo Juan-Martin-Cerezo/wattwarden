@@ -356,7 +356,43 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 		// Extreme mode triggers the confirmation modal
 		{Name: "🔋 Extreme Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { d.confirmExtreme = true }},
 		// Auto mode runs a background loop to manage power
-		{Name: "⚡ Auto Extreme Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { b.StartAutoExtremeDaemon(); d.showToast("AUTO EXTREME DAEMON STARTED") }},
+		{Name: "⚡ Auto Extreme Mode", GetVal: func(b hal.Backend) string { 
+			if b.IsDaemonRunning() { return "ACTIVE" }
+			return "EXECUTE" 
+		}, Action: func(b hal.Backend, d *Dashboard) { 
+			if b.IsDaemonRunning() {
+				b.StopDaemon()
+				d.showToast("AUTO EXTREME DAEMON STOPPED")
+			} else {
+				b.StartAutoExtremeDaemon()
+				d.showToast("AUTO EXTREME DAEMON STARTED")
+			}
+		}},
+		{Name: "Auto Brightness", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetAutoBrightness()) }, 
+			Action: func(b hal.Backend, d *Dashboard) { 
+				b.SetAutoBrightness(!b.GetAutoBrightness())
+				if b.GetAutoBrightness() {
+					d.showToast("AUTO BRIGHTNESS: ON")
+				} else {
+					d.showToast("AUTO BRIGHTNESS: OFF")
+				}
+			},
+			Inc: func(b hal.Backend, d *Dashboard) { 
+				b.SetAutoBrightness(!b.GetAutoBrightness())
+				if b.GetAutoBrightness() {
+					d.showToast("AUTO BRIGHTNESS: ON")
+				} else {
+					d.showToast("AUTO BRIGHTNESS: OFF")
+				}
+			},
+			Dec: func(b hal.Backend, d *Dashboard) { 
+				b.SetAutoBrightness(!b.GetAutoBrightness())
+				if b.GetAutoBrightness() {
+					d.showToast("AUTO BRIGHTNESS: ON")
+				} else {
+					d.showToast("AUTO BRIGHTNESS: OFF")
+				}
+			}},
 		// Restore mode returns to normal state
 		{Name: "♻  Restore Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.ApplyModeRestore(); d.showToast("RESTORE MODE ACTIVATED") }},
 		{IsHeader: true, Name: ""}, // Empty spacer
@@ -389,8 +425,14 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 			{IsHeader: true, Name: ""},
 			{IsHeader: true, Name: "─── [ PERIPHERALS ] ────────────────────"}, // Hardware section
 			{Name: "LCD Brightness (%)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetLCDBrightness()) }, 
-				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetLCDBrightness(b.GetLCDBrightness()+5) }, 
-				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetLCDBrightness(b.GetLCDBrightness()-5) }},
+				Inc: func(b hal.Backend, d *Dashboard) { 
+					if b.GetAutoBrightness() { b.StopDaemon() }
+					b.SetLCDBrightness(b.GetLCDBrightness()+5) 
+				}, 
+				Dec: func(b hal.Backend, d *Dashboard) { 
+					if b.GetAutoBrightness() { b.StopDaemon() }
+					b.SetLCDBrightness(b.GetLCDBrightness()-5) 
+				}},
 			{Name: "Keyboard Light", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetKbdBacklight()) }, 
 				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetKbdBacklight(!b.GetKbdBacklight()) }, 
 				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetKbdBacklight(!b.GetKbdBacklight()) }},
@@ -425,8 +467,14 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 		items = append(items, []MenuItem{
 			{IsHeader: true, Name: "─── [ DISPLAY ] ────────────────────────"},
 			{Name: "LCD Brightness (%)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetLCDBrightness()) }, 
-				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetLCDBrightness(b.GetLCDBrightness()+5) }, 
-				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetLCDBrightness(b.GetLCDBrightness()-5) }},
+				Inc: func(b hal.Backend, d *Dashboard) { 
+					if b.GetAutoBrightness() { b.StopDaemon() }
+					b.SetLCDBrightness(b.GetLCDBrightness()+5) 
+				}, 
+				Dec: func(b hal.Backend, d *Dashboard) { 
+					if b.GetAutoBrightness() { b.StopDaemon() }
+					b.SetLCDBrightness(b.GetLCDBrightness()-5) 
+				}},
 		}...)
 	} else if osName == "macOS" {
 		items = append(items, []MenuItem{

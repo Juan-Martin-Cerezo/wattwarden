@@ -55,3 +55,25 @@ func TestLinuxBackend_GetGPUBounds(t *testing.T) {
 		t.Errorf("Expected minMhz <= maxMhz, got min=%d, max=%d", minMhz, maxMhz)
 	}
 }
+
+func TestLinuxBackend_AutoBrightness(t *testing.T) {
+	backend := &LinuxBackend{}
+	backend.SetAutoBrightness(true)
+	if !backend.GetAutoBrightness() {
+		t.Errorf("Expected auto brightness to be true")
+	}
+	backend.SetAutoBrightness(false)
+	if backend.GetAutoBrightness() {
+		t.Errorf("Expected auto brightness to be false")
+	}
+	backend.SetAutoBrightness(true)
+}
+
+func TestLinuxBackend_IsDaemonRunning(t *testing.T) {
+	backend := &LinuxBackend{}
+	backend.StopDaemon()
+	if backend.IsDaemonRunning() {
+		t.Errorf("Expected daemon to not be running")
+	}
+}
+

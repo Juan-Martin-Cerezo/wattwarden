@@ -163,8 +163,18 @@ func (b *LinuxBackend) GetBatteryPercentage() int {
 
 // IsCharging checks if the device is plugged in
 func (b *LinuxBackend) IsCharging() bool {
+	// First check AC power supply online status if available
+	matches, _ := filepath.Glob("/sys/class/power_supply/*")
+	for _, p := range matches {
+		typeContent := strings.TrimSpace(readSys(filepath.Join(p, "type")))
+		if typeContent == "Mains" || typeContent == "USB_C" || typeContent == "USB" {
+			if readSys(filepath.Join(p, "online")) == "1" {
+				return true
+			}
+		}
+	}
 	status := readSys(filepath.Join(getBatteryPath(), "status")) // Read charging state
-	return status == "Charging" || status == "Full" || status == "Not charging" // Return true if plugged in
+	return status == "Charging" || status == "Full"
 }
 
 // GetBatteryTime estimates remaining time or time to full
@@ -512,12 +522,22 @@ func (b *LinuxBackend) GetLCDBrightness() int {
 			return (cur * 100) / max // Return percentage
 		}
 	}
+	out := runCmd("brightnessctl -m")
+	if out != "" {
+		parts := strings.Split(out, ",")
+		if len(parts) >= 4 {
+			percStr := strings.TrimSuffix(parts[3], "%")
+			if v, err := strconv.Atoi(percStr); err == nil {
+				return v
+			}
+		}
+	}
 	return 100 // Fallback
 }
 
 // SetLCDBrightness sets screen brightness to a specific percentage
 func (b *LinuxBackend) SetLCDBrightness(percent int) {
-	if percent < 5 { percent = 5 } // Ensure screen doesn't completely turn off and become unusable
+	if percent < 1 { percent = 1 } // Ensure screen doesn't completely turn off and become unusable
 	if percent > 100 { percent = 100 } // Clamp to max 100%
 	fs, _ := filepath.Glob("/sys/class/backlight/*") // Find backlights
 	for _, f := range fs {
@@ -527,6 +547,7 @@ func (b *LinuxBackend) SetLCDBrightness(percent int) {
 			writeSys(f+"/brightness", strconv.Itoa(target)) // Apply
 		}
 	}
+	_ = exec.Command("brightnessctl", "set", fmt.Sprintf("%d%%", percent)).Run()
 }
 
 // GetBluetooth checks if Bluetooth is enabled via rfkill
@@ -627,6 +648,7 @@ func (b *LinuxBackend) ApplyModePerformance() {
 	b.SetASPM("performance") // Disable PCIe power saving
 	b.SetWifiPowerSave(false) // Disable Wi-Fi power save
 	b.SetAudioPowerSave(false) // Disable audio power save
+	b.SetLCDBrightness(100) // Restore full brightness
 	b.SetAutosuspend(false) // Keep devices awake
 	b.SetWatchdog(true) // Enable watchdog
 	b.SetVMWriteback(500) // Default flush time (5 seconds)
@@ -669,6 +691,7 @@ func (b *LinuxBackend) ApplyModeRestore() {
 	b.SetASPM("default") // Let OS manage PCIe ASPM
 	b.SetWifiPowerSave(false) // Default Wi-Fi to always ready
 	b.SetAudioPowerSave(false) // Default Audio to ready
+	b.SetLCDBrightness(100) // Restore full brightness
 	b.SetAutosuspend(false) // Default Devices to ready
 	b.SetWatchdog(true) // Standard kernel watchdog
 	b.SetVMWriteback(500) // Standard 5s disk flush
@@ -677,6 +700,29 @@ func (b *LinuxBackend) ApplyModeRestore() {
 var daemonRunning bool // Global state to track if daemon is active
 var daemonQuit chan struct{} // Channel to signal the daemon to stop
 var daemonMutex sync.Mutex // Mutex to prevent race conditions on daemon state
+var autoBrightnessEnabled = true // Auto-brightness toggle for daemon mode
+var autoBrightnessMutex sync.RWMutex // Mutex for auto-brightness toggle
+
+// GetAutoBrightness returns whether auto brightness is enabled in daemon mode
+func (b *LinuxBackend) GetAutoBrightness() bool {
+	autoBrightnessMutex.RLock()
+	defer autoBrightnessMutex.RUnlock()
+	return autoBrightnessEnabled
+}
+
+// SetAutoBrightness configures auto brightness behavior in daemon mode
+func (b *LinuxBackend) SetAutoBrightness(enabled bool) {
+	autoBrightnessMutex.Lock()
+	defer autoBrightnessMutex.Unlock()
+	autoBrightnessEnabled = enabled
+}
+
+// IsDaemonRunning returns true if the Auto Extreme daemon is running
+func (b *LinuxBackend) IsDaemonRunning() bool {
+	daemonMutex.Lock()
+	defer daemonMutex.Unlock()
+	return daemonRunning
+}
 
 // StopDaemon stops the auto-extreme adjustment loop
 func (b *LinuxBackend) StopDaemon() {
@@ -689,6 +735,97 @@ func (b *LinuxBackend) StopDaemon() {
 	}
 }
 
+// getLinuxActiveWindow retrieves the active window class on Hyprland, Wayland or X11 even when running under sudo
+func getLinuxActiveWindow() string {
+	sig := os.Getenv("HYPRLAND_INSTANCE_SIGNATURE")
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+
+	if sig == "" || runtimeDir == "" {
+		matches, _ := filepath.Glob("/run/user/*/hypr/*/.socket.sock")
+		if len(matches) > 0 {
+			parts := strings.Split(matches[0], "/")
+			if len(parts) >= 6 {
+				runtimeDir = "/" + filepath.Join(parts[1], parts[2], parts[3])
+				sig = parts[5]
+			}
+		}
+	}
+
+	if sig != "" && runtimeDir != "" {
+		cmd := exec.Command("hyprctl", "activewindow", "-j")
+		cmd.Env = append(os.Environ(), "HYPRLAND_INSTANCE_SIGNATURE="+sig, "XDG_RUNTIME_DIR="+runtimeDir)
+		out, err := cmd.Output()
+		if err == nil {
+			var win struct {
+				Class string `json:"class"`
+			}
+			if err := json.Unmarshal(out, &win); err == nil {
+				return strings.ToLower(win.Class)
+			}
+		}
+	}
+
+	if out := runCmd("xdotool getactivewindow getwindowclassname 2>/dev/null"); out != "" {
+		return strings.ToLower(out)
+	}
+
+	return ""
+}
+
+type cpuStat struct {
+	idle  uint64
+	total uint64
+}
+
+func readCPUStat() cpuStat {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return cpuStat{}
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 {
+		return cpuStat{}
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return cpuStat{}
+	}
+	var total, idle uint64
+	for i := 1; i < len(fields); i++ {
+		val, _ := strconv.ParseUint(fields[i], 10, 64)
+		total += val
+		if i == 4 || i == 5 {
+			idle += val
+		}
+	}
+	return cpuStat{idle: idle, total: total}
+}
+
+var (
+	lastStatMutex sync.Mutex
+	lastCPUStat   cpuStat
+)
+
+func getInstantCPULoad() float64 {
+	lastStatMutex.Lock()
+	defer lastStatMutex.Unlock()
+	cur := readCPUStat()
+	if lastCPUStat.total == 0 || cur.total <= lastCPUStat.total {
+		lastCPUStat = cur
+		return 0.0
+	}
+	deltaTotal := float64(cur.total - lastCPUStat.total)
+	deltaIdle := float64(cur.idle - lastCPUStat.idle)
+	lastCPUStat = cur
+	if deltaTotal == 0 {
+		return 0.0
+	}
+	usage := (deltaTotal - deltaIdle) / deltaTotal
+	if usage < 0 { usage = 0 }
+	if usage > 1.0 { usage = 1.0 }
+	return usage
+}
+
 // StartAutoExtremeDaemon starts a background process that watches battery state
 func (b *LinuxBackend) StartAutoExtremeDaemon() {
 	b.StopDaemon() // Ensure only one runs at a time
@@ -699,49 +836,55 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 	daemonMutex.Unlock()
 
 	go func() { // Run in background goroutine
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
+		var lastAppliedBrightness int
+
 		applyBrightness := func() {
+			if !b.GetAutoBrightness() {
+				return
+			}
 			if b.IsCharging() {
+				if b.GetLCDBrightness() < 80 {
+					b.SetLCDBrightness(100)
+					lastAppliedBrightness = 100
+				}
 				return
 			}
 
-			loadAvgStr := readSys("/proc/loadavg")
-			parts := strings.Fields(loadAvgStr)
-			load := 0.0
-			if len(parts) > 0 {
-				load, _ = strconv.ParseFloat(parts[0], 64)
-			}
+			activeClass := getLinuxActiveWindow()
 
-			activeClass := ""
-			if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "" {
-				out := runCmd("hyprctl activewindow -j")
-				var win struct{ Class string `json:"class"` }
-				json.Unmarshal([]byte(out), &win)
-				activeClass = strings.ToLower(win.Class)
-			}
-
-			targetBrightness := 10
 			isTerminal := activeClass == "" ||
 				strings.Contains(activeClass, "kitty") ||
 				strings.Contains(activeClass, "foot") ||
 				strings.Contains(activeClass, "alacritty") ||
-				strings.Contains(activeClass, "wezterm")
+				strings.Contains(activeClass, "wezterm") ||
+				strings.Contains(activeClass, "ghostty") ||
+				strings.Contains(activeClass, "xterm")
+
+			isHeavyUI := strings.Contains(activeClass, "firefox") ||
+				strings.Contains(activeClass, "chrome") ||
+				strings.Contains(activeClass, "chromium") ||
+				strings.Contains(activeClass, "brave") ||
+				strings.Contains(activeClass, "zen") ||
+				strings.Contains(activeClass, "code") ||
+				strings.Contains(activeClass, "cursor") ||
+				strings.Contains(activeClass, "idea") ||
+				strings.Contains(activeClass, "studio")
+
+			targetBrightness := 20
 			if isTerminal {
-				if load > 1.5 {
-					targetBrightness = 15
-				}
-			} else if load > 2.0 {
-				targetBrightness = 30
-			} else if load > 0.8 {
-				targetBrightness = 20
-			} else {
 				targetBrightness = 12
+			} else if isHeavyUI {
+				targetBrightness = 30
+			} else {
+				targetBrightness = 20
 			}
 
-			if b.GetLCDBrightness() != targetBrightness {
+			if targetBrightness != lastAppliedBrightness || b.GetLCDBrightness() != targetBrightness {
 				b.SetLCDBrightness(targetBrightness)
+				lastAppliedBrightness = targetBrightness
 			}
 		}
 
@@ -807,7 +950,7 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 			}
 		}
 
-		brightnessTicker := time.NewTicker(500 * time.Millisecond)
+		brightnessTicker := time.NewTicker(300 * time.Millisecond)
 		defer brightnessTicker.Stop()
 
 		// Run immediately the first time

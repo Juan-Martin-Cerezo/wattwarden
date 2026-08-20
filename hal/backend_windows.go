@@ -187,6 +187,26 @@ func (b *WindowsBackend) ApplyModeRestore() {
 var daemonWinRunning bool
 var daemonWinQuit chan struct{}
 var daemonWinMutex sync.Mutex
+var autoBrightnessWinEnabled = true
+var autoBrightnessWinMutex sync.RWMutex
+
+func (b *WindowsBackend) GetAutoBrightness() bool {
+	autoBrightnessWinMutex.RLock()
+	defer autoBrightnessWinMutex.RUnlock()
+	return autoBrightnessWinEnabled
+}
+
+func (b *WindowsBackend) SetAutoBrightness(enabled bool) {
+	autoBrightnessWinMutex.Lock()
+	defer autoBrightnessWinMutex.Unlock()
+	autoBrightnessWinEnabled = enabled
+}
+
+func (b *WindowsBackend) IsDaemonRunning() bool {
+	daemonWinMutex.Lock()
+	defer daemonWinMutex.Unlock()
+	return daemonWinRunning
+}
 
 func (b *WindowsBackend) StopDaemon() {
 	daemonWinMutex.Lock()
@@ -242,10 +262,12 @@ func (b *WindowsBackend) StartAutoExtremeDaemon() {
 				
 				setWinProcThrottle(targetPercent)
 				
-				minB := 10
-				maxB := 30
-				targetBrightness := int(float64(minB) + discretePower*float64(maxB-minB))
-				b.SetLCDBrightness(targetBrightness)
+				if b.GetAutoBrightness() {
+					minB := 10
+					maxB := 30
+					targetBrightness := int(float64(minB) + discretePower*float64(maxB-minB))
+					b.SetLCDBrightness(targetBrightness)
+				}
 			}
 		}
 

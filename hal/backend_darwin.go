@@ -153,6 +153,26 @@ func (b *DarwinBackend) ApplyModeRestore() {
 var daemonMacRunning bool
 var daemonMacQuit chan struct{}
 var daemonMacMutex sync.Mutex
+var autoBrightnessMacEnabled = true
+var autoBrightnessMacMutex sync.RWMutex
+
+func (b *DarwinBackend) GetAutoBrightness() bool {
+	autoBrightnessMacMutex.RLock()
+	defer autoBrightnessMacMutex.RUnlock()
+	return autoBrightnessMacEnabled
+}
+
+func (b *DarwinBackend) SetAutoBrightness(enabled bool) {
+	autoBrightnessMacMutex.Lock()
+	defer autoBrightnessMacMutex.Unlock()
+	autoBrightnessMacEnabled = enabled
+}
+
+func (b *DarwinBackend) IsDaemonRunning() bool {
+	daemonMacMutex.Lock()
+	defer daemonMacMutex.Unlock()
+	return daemonMacRunning
+}
 
 func (b *DarwinBackend) StopDaemon() {
 	daemonMacMutex.Lock()
