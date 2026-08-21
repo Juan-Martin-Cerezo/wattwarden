@@ -7,6 +7,7 @@ import ( // Standard library imports
 	"time" // Time handling for sleep and intervals
 
 	"wattwarden/hal" // Our own Hardware Abstraction Layer
+	"wattwarden/service" // Service and daemon persistence
 
 	"github.com/gdamore/tcell/v2" // The tcell library used to draw to the terminal
 )
@@ -352,49 +353,61 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 	items := []MenuItem{
 		{IsHeader: true, Name: "─── [ PROFILES ] ───────────────────────"}, // Title
 		// Performance Mode sets all settings to maximum power
-		{Name: "⚡ Performance Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.ApplyModePerformance(); d.showToast("PERFORMANCE MODE ACTIVATED") }},
+		{Name: "⚡ Performance Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { service.StopBackgroundDaemon(b); b.ApplyModePerformance(); d.showToast("PERFORMANCE MODE ACTIVATED") }},
 		// Extreme mode triggers the confirmation modal
 		{Name: "🔋 Extreme Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { d.confirmExtreme = true }},
 		// Auto mode runs a background loop to manage power
 		{Name: "⚡ Auto Extreme Mode", GetVal: func(b hal.Backend) string { 
-			if b.IsDaemonRunning() { return "ACTIVE" }
+			if b.IsDaemonRunning() || service.IsDaemonActive() { return "ACTIVE" }
 			return "EXECUTE" 
 		}, Action: func(b hal.Backend, d *Dashboard) { 
-			if b.IsDaemonRunning() {
-				b.StopDaemon()
+			if b.IsDaemonRunning() || service.IsDaemonActive() {
+				service.StopBackgroundDaemon(b)
 				d.showToast("AUTO EXTREME DAEMON STOPPED")
 			} else {
-				b.StartAutoExtremeDaemon()
-				d.showToast("AUTO EXTREME DAEMON STARTED")
+				_ = service.StartBackgroundDaemon(b)
+				d.showToast("AUTO EXTREME RUNNING (BACKGROUND)")
 			}
 		}},
 		{Name: "Auto Brightness", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetAutoBrightness()) }, 
 			Action: func(b hal.Backend, d *Dashboard) { 
-				b.SetAutoBrightness(!b.GetAutoBrightness())
-				if b.GetAutoBrightness() {
+				newVal := !b.GetAutoBrightness()
+				b.SetAutoBrightness(newVal)
+				cfg := service.LoadConfig()
+				cfg.AutoBrightness = newVal
+				_ = service.SaveConfig(cfg)
+				if newVal {
 					d.showToast("AUTO BRIGHTNESS: ON")
 				} else {
 					d.showToast("AUTO BRIGHTNESS: OFF")
 				}
 			},
 			Inc: func(b hal.Backend, d *Dashboard) { 
-				b.SetAutoBrightness(!b.GetAutoBrightness())
-				if b.GetAutoBrightness() {
+				newVal := !b.GetAutoBrightness()
+				b.SetAutoBrightness(newVal)
+				cfg := service.LoadConfig()
+				cfg.AutoBrightness = newVal
+				_ = service.SaveConfig(cfg)
+				if newVal {
 					d.showToast("AUTO BRIGHTNESS: ON")
 				} else {
 					d.showToast("AUTO BRIGHTNESS: OFF")
 				}
 			},
 			Dec: func(b hal.Backend, d *Dashboard) { 
-				b.SetAutoBrightness(!b.GetAutoBrightness())
-				if b.GetAutoBrightness() {
+				newVal := !b.GetAutoBrightness()
+				b.SetAutoBrightness(newVal)
+				cfg := service.LoadConfig()
+				cfg.AutoBrightness = newVal
+				_ = service.SaveConfig(cfg)
+				if newVal {
 					d.showToast("AUTO BRIGHTNESS: ON")
 				} else {
 					d.showToast("AUTO BRIGHTNESS: OFF")
 				}
 			}},
 		// Restore mode returns to normal state
-		{Name: "♻  Restore Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.ApplyModeRestore(); d.showToast("RESTORE MODE ACTIVATED") }},
+		{Name: "♻  Restore Mode", GetVal: func(b hal.Backend) string { return "EXECUTE" }, Action: func(b hal.Backend, d *Dashboard) { service.StopBackgroundDaemon(b); b.ApplyModeRestore(); d.showToast("RESTORE MODE ACTIVATED") }},
 		{IsHeader: true, Name: ""}, // Empty spacer
 	}
 
@@ -514,7 +527,7 @@ func (d *Dashboard) Run() {
 		case *tcell.EventKey: // If it's a keyboard event
 			if d.confirmExtreme { // If the extreme mode modal is open, intercept keys
 				if ev.Rune() == 'y' || ev.Rune() == 'Y' { // Yes
-					d.backend.StopDaemon()
+					service.StopBackgroundDaemon(d.backend)
 					d.backend.ApplyModeExtreme() // Apply
 					d.confirmExtreme = false // Close modal
 					d.showToast("EXTREME MODE ACTIVATED") // Notify
@@ -547,7 +560,7 @@ func (d *Dashboard) Run() {
 				close(d.quit) // Exit program
 				return
 			} else if ev.Rune() == 'r' || ev.Rune() == 'R' || ev.Key() == tcell.KeyCtrlR { // Hotkey for restore mode
-				d.backend.StopDaemon()
+				service.StopBackgroundDaemon(d.backend)
 				d.backend.ApplyModeRestore()
 				d.showToast("System Restored")
 				d.drawUI()
@@ -597,6 +610,9 @@ func (d *Dashboard) Run() {
 
 // StartDashboard initializes tcell and launches the UI
 func StartDashboard(b hal.Backend) {
+	cfg := service.LoadConfig()
+	b.SetAutoBrightness(cfg.AutoBrightness)
+
 	s, err := tcell.NewScreen() // Create a new terminal screen buffer
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create screen: %v\n", err) // Print error if fails

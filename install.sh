@@ -53,10 +53,12 @@ elif command -v sudo >/dev/null 2>&1; then
   sudo mkdir -p "${INSTALL_DIR}"
   sudo cp "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
   sudo chmod 755 "${INSTALL_DIR}/${BINARY_NAME}"
-else
-  echo "❌ Error: Root privileges or sudo are required to install to ${INSTALL_DIR}."
-  exit 1
+# 6. Initialize configuration and register background service
+if [[ $EUID -eq 0 ]]; then
+  "${INSTALL_DIR}/${BINARY_NAME}" --install-service >/dev/null 2>&1 || true
+elif command -v sudo >/dev/null 2>&1; then
+  sudo "${INSTALL_DIR}/${BINARY_NAME}" --install-service >/dev/null 2>&1 || true
 fi
 
-echo "✅ Success! WattWarden has been installed."
-echo "👉 You can now run it by typing: sudo wattwarden"
+echo "✅ Success! WattWarden has been installed and is running in the background."
+echo "👉 You can open the interactive dashboard anytime by typing: sudo wattwarden"
