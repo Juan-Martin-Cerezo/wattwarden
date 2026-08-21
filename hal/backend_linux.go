@@ -702,28 +702,16 @@ var daemonQuit chan struct{} // Channel to signal the daemon to stop
 var daemonMutex sync.Mutex // Mutex to prevent race conditions on daemon state
 var autoBrightnessEnabled = true // Auto-brightness toggle for daemon mode
 var autoBrightnessMutex sync.RWMutex // Mutex for auto-brightness toggle
-var lastAutoBrightnessSet time.Time
-
 // GetAutoBrightness returns whether auto brightness is enabled in daemon mode
 func (b *LinuxBackend) GetAutoBrightness() bool {
-	info, err := os.Stat("/etc/wattwarden/config.json")
-	if err == nil {
-		autoBrightnessMutex.RLock()
-		lastSet := lastAutoBrightnessSet
-		autoBrightnessMutex.RUnlock()
-
-		if info.ModTime().After(lastSet) || lastSet.IsZero() {
-			data, err := os.ReadFile("/etc/wattwarden/config.json")
-			if err == nil {
-				var cfg struct {
-					AutoBrightness bool `json:"auto_brightness"`
-				}
-				if err := json.Unmarshal(data, &cfg); err == nil {
-					autoBrightnessMutex.Lock()
-					autoBrightnessEnabled = cfg.AutoBrightness
-					autoBrightnessMutex.Unlock()
-					return cfg.AutoBrightness
-				}
+	if os.Geteuid() == 0 {
+		data, err := os.ReadFile("/etc/wattwarden/config.json")
+		if err == nil {
+			var cfg struct {
+				AutoBrightness bool `json:"auto_brightness"`
+			}
+			if err := json.Unmarshal(data, &cfg); err == nil {
+				return cfg.AutoBrightness
 			}
 		}
 	}
@@ -737,7 +725,6 @@ func (b *LinuxBackend) GetAutoBrightness() bool {
 func (b *LinuxBackend) SetAutoBrightness(enabled bool) {
 	autoBrightnessMutex.Lock()
 	autoBrightnessEnabled = enabled
-	lastAutoBrightnessSet = time.Now()
 	autoBrightnessMutex.Unlock()
 
 	_ = os.MkdirAll("/etc/wattwarden", 0755)
@@ -931,7 +918,22 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 		// Helper to apply logic based on battery state
 		applyLogic := func() {
 			if b.IsCharging() { // If plugged in
-				b.ApplyModePerformance() // Ramp up performance
+				b.SetCores(b.GetNumCPUs())
+				b.SetFreqLimit(99999)
+				b.SetRAPLPL1(115)
+				b.SetRAPLPL2(115)
+				b.SetTurbo(true)
+				b.SetEPP("performance")
+				b.SetGPUFreq(99999)
+				b.SetASPM("performance")
+				b.SetWifiPowerSave(false)
+				b.SetAudioPowerSave(false)
+				b.SetAutosuspend(false)
+				b.SetWatchdog(true)
+				b.SetVMWriteback(500)
+				if b.GetAutoBrightness() {
+					b.SetLCDBrightness(100)
+				}
 			} else {
 				// Read /proc/loadavg
 				loadAvgStr := readSys("/proc/loadavg")

@@ -227,25 +227,13 @@ func (b *WindowsBackend) GetAutoBrightness() bool {
 		programData = "C:\\ProgramData"
 	}
 	cfgPath := filepath.Join(programData, "wattwarden", "config.json")
-	info, err := os.Stat(cfgPath)
+	data, err := os.ReadFile(cfgPath)
 	if err == nil {
-		autoBrightnessWinMutex.RLock()
-		lastSet := lastAutoBrightnessWinSet
-		autoBrightnessWinMutex.RUnlock()
-
-		if info.ModTime().After(lastSet) || lastSet.IsZero() {
-			data, err := os.ReadFile(cfgPath)
-			if err == nil {
-				var cfg struct {
-					AutoBrightness bool `json:"auto_brightness"`
-				}
-				if err := json.Unmarshal(data, &cfg); err == nil {
-					autoBrightnessWinMutex.Lock()
-					autoBrightnessWinEnabled = cfg.AutoBrightness
-					autoBrightnessWinMutex.Unlock()
-					return cfg.AutoBrightness
-				}
-			}
+		var cfg struct {
+			AutoBrightness bool `json:"auto_brightness"`
+		}
+		if err := json.Unmarshal(data, &cfg); err == nil {
+			return cfg.AutoBrightness
 		}
 	}
 

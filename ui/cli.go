@@ -455,11 +455,23 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 			{IsHeader: true, Name: "─── [ PERIPHERALS ] ────────────────────"}, // Hardware section
 			{Name: "LCD Brightness (%)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetLCDBrightness()) }, 
 				Inc: func(b hal.Backend, d *Dashboard) { 
-					if b.GetAutoBrightness() { b.StopDaemon() }
+					if b.GetAutoBrightness() {
+						b.SetAutoBrightness(false)
+						cfg := service.LoadConfig()
+						cfg.AutoBrightness = false
+						_ = service.SaveConfig(cfg)
+						d.showToast("AUTO BRIGHTNESS: OFF")
+					}
 					b.SetLCDBrightness(b.GetLCDBrightness()+5) 
 				}, 
 				Dec: func(b hal.Backend, d *Dashboard) { 
-					if b.GetAutoBrightness() { b.StopDaemon() }
+					if b.GetAutoBrightness() {
+						b.SetAutoBrightness(false)
+						cfg := service.LoadConfig()
+						cfg.AutoBrightness = false
+						_ = service.SaveConfig(cfg)
+						d.showToast("AUTO BRIGHTNESS: OFF")
+					}
 					b.SetLCDBrightness(b.GetLCDBrightness()-5) 
 				}},
 			{Name: "Keyboard Light", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetKbdBacklight()) }, 
@@ -502,11 +514,23 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 			{IsHeader: true, Name: "─── [ PERIPHERALS & NETWORKING ] ──────"},
 			{Name: "LCD Brightness (%)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetLCDBrightness()) }, 
 				Inc: func(b hal.Backend, d *Dashboard) { 
-					if b.GetAutoBrightness() { b.StopDaemon() }
+					if b.GetAutoBrightness() {
+						b.SetAutoBrightness(false)
+						cfg := service.LoadConfig()
+						cfg.AutoBrightness = false
+						_ = service.SaveConfig(cfg)
+						d.showToast("AUTO BRIGHTNESS: OFF")
+					}
 					b.SetLCDBrightness(b.GetLCDBrightness()+5) 
 				}, 
 				Dec: func(b hal.Backend, d *Dashboard) { 
-					if b.GetAutoBrightness() { b.StopDaemon() }
+					if b.GetAutoBrightness() {
+						b.SetAutoBrightness(false)
+						cfg := service.LoadConfig()
+						cfg.AutoBrightness = false
+						_ = service.SaveConfig(cfg)
+						d.showToast("AUTO BRIGHTNESS: OFF")
+					}
 					b.SetLCDBrightness(b.GetLCDBrightness()-5) 
 				}},
 			{Name: "WiFi Enable", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetWifiEnable()) }, 
@@ -525,11 +549,23 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 			{IsHeader: true, Name: "─── [ PERIPHERALS & NETWORKING ] ──────"},
 			{Name: "LCD Brightness (%)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetLCDBrightness()) }, 
 				Inc: func(b hal.Backend, d *Dashboard) { 
-					if b.GetAutoBrightness() { b.StopDaemon() }
+					if b.GetAutoBrightness() {
+						b.SetAutoBrightness(false)
+						cfg := service.LoadConfig()
+						cfg.AutoBrightness = false
+						_ = service.SaveConfig(cfg)
+						d.showToast("AUTO BRIGHTNESS: OFF")
+					}
 					b.SetLCDBrightness(b.GetLCDBrightness()+5) 
 				}, 
 				Dec: func(b hal.Backend, d *Dashboard) { 
-					if b.GetAutoBrightness() { b.StopDaemon() }
+					if b.GetAutoBrightness() {
+						b.SetAutoBrightness(false)
+						cfg := service.LoadConfig()
+						cfg.AutoBrightness = false
+						_ = service.SaveConfig(cfg)
+						d.showToast("AUTO BRIGHTNESS: OFF")
+					}
 					b.SetLCDBrightness(b.GetLCDBrightness()-5) 
 				}},
 			{Name: "WiFi Enable", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetWifiEnable()) }, 

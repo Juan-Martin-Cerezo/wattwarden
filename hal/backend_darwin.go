@@ -214,25 +214,13 @@ var autoBrightnessMacMutex sync.RWMutex
 var lastAutoBrightnessMacSet time.Time
 
 func (b *DarwinBackend) GetAutoBrightness() bool {
-	info, err := os.Stat("/etc/wattwarden/config.json")
+	data, err := os.ReadFile("/etc/wattwarden/config.json")
 	if err == nil {
-		autoBrightnessMacMutex.RLock()
-		lastSet := lastAutoBrightnessMacSet
-		autoBrightnessMacMutex.RUnlock()
-
-		if info.ModTime().After(lastSet) || lastSet.IsZero() {
-			data, err := os.ReadFile("/etc/wattwarden/config.json")
-			if err == nil {
-				var cfg struct {
-					AutoBrightness bool `json:"auto_brightness"`
-				}
-				if err := json.Unmarshal(data, &cfg); err == nil {
-					autoBrightnessMacMutex.Lock()
-					autoBrightnessMacEnabled = cfg.AutoBrightness
-					autoBrightnessMacMutex.Unlock()
-					return cfg.AutoBrightness
-				}
-			}
+		var cfg struct {
+			AutoBrightness bool `json:"auto_brightness"`
+		}
+		if err := json.Unmarshal(data, &cfg); err == nil {
+			return cfg.AutoBrightness
 		}
 	}
 
