@@ -417,16 +417,32 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 			{Name: "Active Cores", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d / %d", b.GetCores(), b.GetNumCPUs()) }, 
 				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetCores(b.GetCores()+1) }, 
 				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetCores(b.GetCores()-1) }},
-			{Name: "CPU Freq (MHz)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetFreqLimit()) }, 
+			{Name: "CPU Freq (MHz)", GetVal: func(b hal.Backend) string { 
+				f := b.GetFreqLimit()
+				if f <= 0 { return "N/A" }
+				return fmt.Sprintf("%d", f) 
+			}, 
 				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetFreqLimit(b.GetFreqLimit()+100) }, 
 				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetFreqLimit(b.GetFreqLimit()-100) }},
-			{Name: "Freq iGPU (MHz)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetGPUFreq()) }, 
+			{Name: "Freq iGPU (MHz)", GetVal: func(b hal.Backend) string { 
+				g := b.GetGPUFreq()
+				if g <= 0 { return "N/A" }
+				return fmt.Sprintf("%d", g) 
+			}, 
 				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetGPUFreq(b.GetGPUFreq()+50) }, 
 				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetGPUFreq(b.GetGPUFreq()-50) }},
-			{Name: "RAPL PL1 (W)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetRAPLPL1()) }, 
+			{Name: "RAPL PL1 (W)", GetVal: func(b hal.Backend) string { 
+				w := b.GetRAPLPL1()
+				if w <= 0 { return "N/A" }
+				return fmt.Sprintf("%d", w) 
+			}, 
 				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetRAPLPL1(b.GetRAPLPL1()+2) }, 
 				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetRAPLPL1(b.GetRAPLPL1()-2) }},
-			{Name: "RAPL PL2 (W)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetRAPLPL2()) }, 
+			{Name: "RAPL PL2 (W)", GetVal: func(b hal.Backend) string { 
+				w := b.GetRAPLPL2()
+				if w <= 0 { return "N/A" }
+				return fmt.Sprintf("%d", w) 
+			}, 
 				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetRAPLPL2(b.GetRAPLPL2()+2) }, 
 				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetRAPLPL2(b.GetRAPLPL2()-2) }},
 			{Name: "Turbo Boost", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetTurbo()) }, 
