@@ -53,6 +53,11 @@ elif command -v sudo >/dev/null 2>&1; then
   sudo mkdir -p "${INSTALL_DIR}"
   sudo cp "${TMP_FILE}" "${INSTALL_DIR}/${BINARY_NAME}"
   sudo chmod 755 "${INSTALL_DIR}/${BINARY_NAME}"
+else
+  echo "❌ Error: Root privileges or sudo are required to install to ${INSTALL_DIR}."
+  exit 1
+fi
+
 # 6. Initialize configuration and register background service
 if [[ $EUID -eq 0 ]]; then
   "${INSTALL_DIR}/${BINARY_NAME}" --install-service >/dev/null 2>&1 || true
