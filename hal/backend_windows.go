@@ -111,8 +111,19 @@ func (b *WindowsBackend) GetRAPLPL1() int { return 0 }
 func (b *WindowsBackend) SetRAPLPL1(w int) {}
 func (b *WindowsBackend) GetRAPLPL2() int { return 0 }
 func (b *WindowsBackend) SetRAPLPL2(w int) {}
-func (b *WindowsBackend) GetTurbo() bool { return true }
-func (b *WindowsBackend) SetTurbo(e bool) {}
+func (b *WindowsBackend) GetTurbo() bool {
+	out := runWinCmd("powercfg", "/query", "SCHEME_CURRENT", "SUB_PROCESSOR", "PERFBOOSTMODE")
+	return !strings.Contains(out, "0x00000000")
+}
+
+func (b *WindowsBackend) SetTurbo(enabled bool) {
+	val := "2" // 2 = Aggressive / Enabled
+	if !enabled { val = "0" } // 0 = Disabled
+	runWinCmd("powercfg", "-setacvalueindex", "SCHEME_CURRENT", "SUB_PROCESSOR", "PERFBOOSTMODE", val)
+	runWinCmd("powercfg", "-setdcvalueindex", "SCHEME_CURRENT", "SUB_PROCESSOR", "PERFBOOSTMODE", val)
+	runWinCmd("powercfg", "-setactive", "SCHEME_CURRENT")
+}
+
 func (b *WindowsBackend) GetEPP() string { return "default" }
 func (b *WindowsBackend) SetEPP(p string) {}
 func (b *WindowsBackend) GetGPUFreq() int { return 0 }
@@ -149,16 +160,32 @@ func (b *WindowsBackend) SetLCDBrightness(percent int) {
 }
 
 func (b *WindowsBackend) GetBluetooth() bool { return true }
-func (b *WindowsBackend) SetBluetooth(enabled bool) {}
-func (b *WindowsBackend) GetWifiEnable() bool { return true }
-func (b *WindowsBackend) SetWifiEnable(enabled bool) {}
+func (b *WindowsBackend) SetBluetooth(enabled bool) {
+	status := "Running"
+	if !enabled { status = "Stopped" }
+	runWinCmd("powershell", "-NoProfile", "-Command", fmt.Sprintf("Set-Service -Name bthserv -Status %s -ErrorAction SilentlyContinue", status))
+}
+
+func (b *WindowsBackend) GetWifiEnable() bool {
+	out := runWinCmd("netsh", "interface", "show", "interface")
+	return !strings.Contains(out, "Disabled")
+}
+
+func (b *WindowsBackend) SetWifiEnable(enabled bool) {
+	admin := "ENABLED"
+	if !enabled { admin = "DISABLED" }
+	runWinCmd("netsh", "interface", "set", "interface", "name=\"Wi-Fi\"", fmt.Sprintf("admin=%s", admin))
+}
+
 func (b *WindowsBackend) GetAutosuspend() bool { return false }
 func (b *WindowsBackend) SetAutosuspend(enabled bool) {}
 func (b *WindowsBackend) GetWatchdog() bool { return true }
 func (b *WindowsBackend) SetWatchdog(enabled bool) {}
 func (b *WindowsBackend) GetVMWriteback() int { return 500 }
 func (b *WindowsBackend) SetVMWriteback(centisecs int) {}
-func (b *WindowsBackend) ProcessPurge() {}
+func (b *WindowsBackend) ProcessPurge() {
+	runWinCmd("powershell", "-NoProfile", "-Command", "[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()")
+}
 
 // Powercfg helper
 func setWinProcThrottle(maxPercent int) {

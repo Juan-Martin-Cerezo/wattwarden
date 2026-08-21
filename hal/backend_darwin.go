@@ -5,6 +5,7 @@ package hal
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -117,13 +118,66 @@ func (b *DarwinBackend) SetHyprEffects(e bool) {}
 func (b *DarwinBackend) SetNMIWatchdog(e bool) {}
 func (b *DarwinBackend) SetVMDirty(w int, e int) {}
 
-func (b *DarwinBackend) GetLCDBrightness() int { return 100 }
-func (b *DarwinBackend) SetLCDBrightness(percent int) {}
+func (b *DarwinBackend) GetLCDBrightness() int {
+	out := runMacCmd("brightness", "-l")
+	if strings.Contains(out, "brightness") {
+		match := regexp.MustCompile(`brightness[ =]+([0-9.]+)`).FindStringSubmatch(out)
+		if len(match) == 2 {
+			if v, err := strconv.ParseFloat(match[1], 64); err == nil {
+				return int(v * 100)
+			}
+		}
+	}
+	return 100
+}
 
-func (b *DarwinBackend) GetBluetooth() bool { return true }
-func (b *DarwinBackend) SetBluetooth(enabled bool) {}
-func (b *DarwinBackend) GetWifiEnable() bool { return true }
-func (b *DarwinBackend) SetWifiEnable(enabled bool) {}
+func (b *DarwinBackend) SetLCDBrightness(percent int) {
+	if percent < 1 { percent = 1 }
+	if percent > 100 { percent = 100 }
+	val := float64(percent) / 100.0
+	runMacCmd("brightness", fmt.Sprintf("%.2f", val))
+}
+
+func (b *DarwinBackend) GetBluetooth() bool {
+	out := runMacCmd("defaults", "read", "/Library/Preferences/com.apple.Bluetooth", "ControllerPowerState")
+	return strings.TrimSpace(out) != "0"
+}
+
+func (b *DarwinBackend) SetBluetooth(enabled bool) {
+	val := "1"
+	if !enabled { val = "0" }
+	runMacCmd("defaults", "write", "/Library/Preferences/com.apple.Bluetooth", "ControllerPowerState", "-int", val)
+	runMacCmd("blueutil", "--power", val)
+}
+
+func getMacWifiDevice() string {
+	out := runMacCmd("networksetup", "-listallhardwareports")
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "Wi-Fi") || strings.Contains(line, "AirPort") {
+			if i+1 < len(lines) && strings.Contains(lines[i+1], "Device:") {
+				parts := strings.Fields(lines[i+1])
+				if len(parts) >= 2 {
+					return parts[1]
+				}
+			}
+		}
+	}
+	return "en0"
+}
+
+func (b *DarwinBackend) GetWifiEnable() bool {
+	dev := getMacWifiDevice()
+	out := runMacCmd("networksetup", "-getairportpower", dev)
+	return strings.Contains(strings.ToLower(out), "on")
+}
+
+func (b *DarwinBackend) SetWifiEnable(enabled bool) {
+	dev := getMacWifiDevice()
+	val := "on"
+	if !enabled { val = "off" }
+	runMacCmd("networksetup", "-setairportpower", dev, val)
+}
 func (b *DarwinBackend) GetAutosuspend() bool { return false }
 func (b *DarwinBackend) SetAutosuspend(enabled bool) {}
 func (b *DarwinBackend) GetWatchdog() bool { return true }

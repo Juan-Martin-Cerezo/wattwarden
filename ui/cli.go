@@ -494,7 +494,12 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 		}...)
 	} else if osName == "Windows" {
 		items = append(items, []MenuItem{
-			{IsHeader: true, Name: "─── [ DISPLAY ] ────────────────────────"},
+			{IsHeader: true, Name: "─── [ HARDWARE LIMITS ] ────────────────"},
+			{Name: "Turbo Boost", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetTurbo()) }, 
+				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetTurbo(!b.GetTurbo()) }, 
+				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetTurbo(!b.GetTurbo()) }},
+			{IsHeader: true, Name: ""},
+			{IsHeader: true, Name: "─── [ PERIPHERALS & NETWORKING ] ──────"},
 			{Name: "LCD Brightness (%)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetLCDBrightness()) }, 
 				Inc: func(b hal.Backend, d *Dashboard) { 
 					if b.GetAutoBrightness() { b.StopDaemon() }
@@ -504,9 +509,36 @@ func buildMenuItems(d *Dashboard) []MenuItem {
 					if b.GetAutoBrightness() { b.StopDaemon() }
 					b.SetLCDBrightness(b.GetLCDBrightness()-5) 
 				}},
+			{Name: "WiFi Enable", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetWifiEnable()) }, 
+				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetWifiEnable(!b.GetWifiEnable()) }, 
+				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetWifiEnable(!b.GetWifiEnable()) }},
+			{Name: "Bluetooth", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetBluetooth()) }, 
+				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetBluetooth(!b.GetBluetooth()) }, 
+				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetBluetooth(!b.GetBluetooth()) }},
+			{IsHeader: true, Name: ""},
+			{IsHeader: true, Name: "─── [ SYSTEM MEMORY ] ──────────────────"},
+			{Name: "Process Purge", GetVal: func(b hal.Backend) string { return "EXECUTE" }, 
+				Action: func(b hal.Backend, d *Dashboard) { b.ProcessPurge(); d.showToast("PROCESSES PURGED") }},
 		}...)
 	} else if osName == "macOS" {
 		items = append(items, []MenuItem{
+			{IsHeader: true, Name: "─── [ PERIPHERALS & NETWORKING ] ──────"},
+			{Name: "LCD Brightness (%)", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%d", b.GetLCDBrightness()) }, 
+				Inc: func(b hal.Backend, d *Dashboard) { 
+					if b.GetAutoBrightness() { b.StopDaemon() }
+					b.SetLCDBrightness(b.GetLCDBrightness()+5) 
+				}, 
+				Dec: func(b hal.Backend, d *Dashboard) { 
+					if b.GetAutoBrightness() { b.StopDaemon() }
+					b.SetLCDBrightness(b.GetLCDBrightness()-5) 
+				}},
+			{Name: "WiFi Enable", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetWifiEnable()) }, 
+				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetWifiEnable(!b.GetWifiEnable()) }, 
+				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetWifiEnable(!b.GetWifiEnable()) }},
+			{Name: "Bluetooth", GetVal: func(b hal.Backend) string { return fmt.Sprintf("%v", b.GetBluetooth()) }, 
+				Inc: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetBluetooth(!b.GetBluetooth()) }, 
+				Dec: func(b hal.Backend, d *Dashboard) { b.StopDaemon(); b.SetBluetooth(!b.GetBluetooth()) }},
+			{IsHeader: true, Name: ""},
 			{IsHeader: true, Name: "─── [ SYSTEM MEMORY ] ──────────────────"},
 			{Name: "Process Purge", GetVal: func(b hal.Backend) string { return "EXECUTE" }, 
 				Action: func(b hal.Backend, d *Dashboard) { b.ProcessPurge(); d.showToast("PROCESSES PURGED") }},
