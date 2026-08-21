@@ -222,21 +222,6 @@ var autoBrightnessWinMutex sync.RWMutex
 var lastAutoBrightnessWinSet time.Time
 
 func (b *WindowsBackend) GetAutoBrightness() bool {
-	programData := os.Getenv("ProgramData")
-	if programData == "" {
-		programData = "C:\\ProgramData"
-	}
-	cfgPath := filepath.Join(programData, "wattwarden", "config.json")
-	data, err := os.ReadFile(cfgPath)
-	if err == nil {
-		var cfg struct {
-			AutoBrightness bool `json:"auto_brightness"`
-		}
-		if err := json.Unmarshal(data, &cfg); err == nil {
-			return cfg.AutoBrightness
-		}
-	}
-
 	autoBrightnessWinMutex.RLock()
 	defer autoBrightnessWinMutex.RUnlock()
 	return autoBrightnessWinEnabled
@@ -245,7 +230,6 @@ func (b *WindowsBackend) GetAutoBrightness() bool {
 func (b *WindowsBackend) SetAutoBrightness(enabled bool) {
 	autoBrightnessWinMutex.Lock()
 	autoBrightnessWinEnabled = enabled
-	lastAutoBrightnessWinSet = time.Now()
 	autoBrightnessWinMutex.Unlock()
 
 	programData := os.Getenv("ProgramData")
@@ -315,8 +299,27 @@ func (b *WindowsBackend) StartAutoExtremeDaemon() {
 		defer ticker.Stop()
 
 		applyLogic := func() {
+			programData := os.Getenv("ProgramData")
+			if programData == "" {
+				programData = "C:\\ProgramData"
+			}
+			cfgPath := filepath.Join(programData, "wattwarden", "config.json")
+			if data, err := os.ReadFile(cfgPath); err == nil {
+				var cfg struct {
+					AutoBrightness bool `json:"auto_brightness"`
+				}
+				if err := json.Unmarshal(data, &cfg); err == nil {
+					autoBrightnessWinMutex.Lock()
+					autoBrightnessWinEnabled = cfg.AutoBrightness
+					autoBrightnessWinMutex.Unlock()
+				}
+			}
+
 			if b.IsCharging() {
-				b.ApplyModePerformance()
+				setWinProcThrottle(100)
+				if b.GetAutoBrightness() {
+					b.SetLCDBrightness(100)
+				}
 			} else {
 				powerLevel := getWinLoad()
 				if powerLevel > 1.0 { powerLevel = 1.0 }

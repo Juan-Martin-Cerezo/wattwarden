@@ -704,18 +704,6 @@ var autoBrightnessEnabled = true // Auto-brightness toggle for daemon mode
 var autoBrightnessMutex sync.RWMutex // Mutex for auto-brightness toggle
 // GetAutoBrightness returns whether auto brightness is enabled in daemon mode
 func (b *LinuxBackend) GetAutoBrightness() bool {
-	if os.Geteuid() == 0 {
-		data, err := os.ReadFile("/etc/wattwarden/config.json")
-		if err == nil {
-			var cfg struct {
-				AutoBrightness bool `json:"auto_brightness"`
-			}
-			if err := json.Unmarshal(data, &cfg); err == nil {
-				return cfg.AutoBrightness
-			}
-		}
-	}
-
 	autoBrightnessMutex.RLock()
 	defer autoBrightnessMutex.RUnlock()
 	return autoBrightnessEnabled
@@ -869,6 +857,17 @@ func (b *LinuxBackend) StartAutoExtremeDaemon() {
 		var lastAppliedBrightness int
 
 		applyBrightness := func() {
+			if data, err := os.ReadFile("/etc/wattwarden/config.json"); err == nil {
+				var cfg struct {
+					AutoBrightness bool `json:"auto_brightness"`
+				}
+				if err := json.Unmarshal(data, &cfg); err == nil {
+					autoBrightnessMutex.Lock()
+					autoBrightnessEnabled = cfg.AutoBrightness
+					autoBrightnessMutex.Unlock()
+				}
+			}
+
 			if !b.GetAutoBrightness() {
 				return
 			}
