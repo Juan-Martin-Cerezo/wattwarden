@@ -4,7 +4,9 @@
 package hal
 
 import (
+	"encoding/json"
 	"math"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -155,8 +157,31 @@ var daemonMacQuit chan struct{}
 var daemonMacMutex sync.Mutex
 var autoBrightnessMacEnabled = true
 var autoBrightnessMacMutex sync.RWMutex
+var lastAutoBrightnessMacSet time.Time
 
 func (b *DarwinBackend) GetAutoBrightness() bool {
+	info, err := os.Stat("/etc/wattwarden/config.json")
+	if err == nil {
+		autoBrightnessMacMutex.RLock()
+		lastSet := lastAutoBrightnessMacSet
+		autoBrightnessMacMutex.RUnlock()
+
+		if info.ModTime().After(lastSet) || lastSet.IsZero() {
+			data, err := os.ReadFile("/etc/wattwarden/config.json")
+			if err == nil {
+				var cfg struct {
+					AutoBrightness bool `json:"auto_brightness"`
+				}
+				if err := json.Unmarshal(data, &cfg); err == nil {
+					autoBrightnessMacMutex.Lock()
+					autoBrightnessMacEnabled = cfg.AutoBrightness
+					autoBrightnessMacMutex.Unlock()
+					return cfg.AutoBrightness
+				}
+			}
+		}
+	}
+
 	autoBrightnessMacMutex.RLock()
 	defer autoBrightnessMacMutex.RUnlock()
 	return autoBrightnessMacEnabled
@@ -164,8 +189,25 @@ func (b *DarwinBackend) GetAutoBrightness() bool {
 
 func (b *DarwinBackend) SetAutoBrightness(enabled bool) {
 	autoBrightnessMacMutex.Lock()
-	defer autoBrightnessMacMutex.Unlock()
 	autoBrightnessMacEnabled = enabled
+	lastAutoBrightnessMacSet = time.Now()
+	autoBrightnessMacMutex.Unlock()
+
+	_ = os.MkdirAll("/etc/wattwarden", 0755)
+	var cfg struct {
+		AutoExtremeEnabled bool `json:"auto_extreme_enabled"`
+		AutoBrightness     bool `json:"auto_brightness"`
+	}
+	cfg.AutoExtremeEnabled = true
+	data, err := os.ReadFile("/etc/wattwarden/config.json")
+	if err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	cfg.AutoBrightness = enabled
+	newData, err := json.MarshalIndent(cfg, "", "  ")
+	if err == nil {
+		_ = os.WriteFile("/etc/wattwarden/config.json", newData, 0644)
+	}
 }
 
 func (b *DarwinBackend) IsDaemonRunning() bool {

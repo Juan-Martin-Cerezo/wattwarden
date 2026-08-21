@@ -702,9 +702,32 @@ var daemonQuit chan struct{} // Channel to signal the daemon to stop
 var daemonMutex sync.Mutex // Mutex to prevent race conditions on daemon state
 var autoBrightnessEnabled = true // Auto-brightness toggle for daemon mode
 var autoBrightnessMutex sync.RWMutex // Mutex for auto-brightness toggle
+var lastAutoBrightnessSet time.Time
 
 // GetAutoBrightness returns whether auto brightness is enabled in daemon mode
 func (b *LinuxBackend) GetAutoBrightness() bool {
+	info, err := os.Stat("/etc/wattwarden/config.json")
+	if err == nil {
+		autoBrightnessMutex.RLock()
+		lastSet := lastAutoBrightnessSet
+		autoBrightnessMutex.RUnlock()
+
+		if info.ModTime().After(lastSet) || lastSet.IsZero() {
+			data, err := os.ReadFile("/etc/wattwarden/config.json")
+			if err == nil {
+				var cfg struct {
+					AutoBrightness bool `json:"auto_brightness"`
+				}
+				if err := json.Unmarshal(data, &cfg); err == nil {
+					autoBrightnessMutex.Lock()
+					autoBrightnessEnabled = cfg.AutoBrightness
+					autoBrightnessMutex.Unlock()
+					return cfg.AutoBrightness
+				}
+			}
+		}
+	}
+
 	autoBrightnessMutex.RLock()
 	defer autoBrightnessMutex.RUnlock()
 	return autoBrightnessEnabled
@@ -713,8 +736,25 @@ func (b *LinuxBackend) GetAutoBrightness() bool {
 // SetAutoBrightness configures auto brightness behavior in daemon mode
 func (b *LinuxBackend) SetAutoBrightness(enabled bool) {
 	autoBrightnessMutex.Lock()
-	defer autoBrightnessMutex.Unlock()
 	autoBrightnessEnabled = enabled
+	lastAutoBrightnessSet = time.Now()
+	autoBrightnessMutex.Unlock()
+
+	_ = os.MkdirAll("/etc/wattwarden", 0755)
+	var cfg struct {
+		AutoExtremeEnabled bool `json:"auto_extreme_enabled"`
+		AutoBrightness     bool `json:"auto_brightness"`
+	}
+	cfg.AutoExtremeEnabled = true
+	data, err := os.ReadFile("/etc/wattwarden/config.json")
+	if err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	cfg.AutoBrightness = enabled
+	newData, err := json.MarshalIndent(cfg, "", "  ")
+	if err == nil {
+		_ = os.WriteFile("/etc/wattwarden/config.json", newData, 0644)
+	}
 }
 
 // IsDaemonRunning returns true if the Auto Extreme daemon is running

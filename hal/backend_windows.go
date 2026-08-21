@@ -4,9 +4,12 @@
 package hal
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -189,8 +192,36 @@ var daemonWinQuit chan struct{}
 var daemonWinMutex sync.Mutex
 var autoBrightnessWinEnabled = true
 var autoBrightnessWinMutex sync.RWMutex
+var lastAutoBrightnessWinSet time.Time
 
 func (b *WindowsBackend) GetAutoBrightness() bool {
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		programData = "C:\\ProgramData"
+	}
+	cfgPath := filepath.Join(programData, "wattwarden", "config.json")
+	info, err := os.Stat(cfgPath)
+	if err == nil {
+		autoBrightnessWinMutex.RLock()
+		lastSet := lastAutoBrightnessWinSet
+		autoBrightnessWinMutex.RUnlock()
+
+		if info.ModTime().After(lastSet) || lastSet.IsZero() {
+			data, err := os.ReadFile(cfgPath)
+			if err == nil {
+				var cfg struct {
+					AutoBrightness bool `json:"auto_brightness"`
+				}
+				if err := json.Unmarshal(data, &cfg); err == nil {
+					autoBrightnessWinMutex.Lock()
+					autoBrightnessWinEnabled = cfg.AutoBrightness
+					autoBrightnessWinMutex.Unlock()
+					return cfg.AutoBrightness
+				}
+			}
+		}
+	}
+
 	autoBrightnessWinMutex.RLock()
 	defer autoBrightnessWinMutex.RUnlock()
 	return autoBrightnessWinEnabled
@@ -198,8 +229,30 @@ func (b *WindowsBackend) GetAutoBrightness() bool {
 
 func (b *WindowsBackend) SetAutoBrightness(enabled bool) {
 	autoBrightnessWinMutex.Lock()
-	defer autoBrightnessWinMutex.Unlock()
 	autoBrightnessWinEnabled = enabled
+	lastAutoBrightnessWinSet = time.Now()
+	autoBrightnessWinMutex.Unlock()
+
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		programData = "C:\\ProgramData"
+	}
+	cfgPath := filepath.Join(programData, "wattwarden", "config.json")
+	_ = os.MkdirAll(filepath.Dir(cfgPath), 0755)
+	var cfg struct {
+		AutoExtremeEnabled bool `json:"auto_extreme_enabled"`
+		AutoBrightness     bool `json:"auto_brightness"`
+	}
+	cfg.AutoExtremeEnabled = true
+	data, err := os.ReadFile(cfgPath)
+	if err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	cfg.AutoBrightness = enabled
+	newData, err := json.MarshalIndent(cfg, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(cfgPath, newData, 0644)
+	}
 }
 
 func (b *WindowsBackend) IsDaemonRunning() bool {
