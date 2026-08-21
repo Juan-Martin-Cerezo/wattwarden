@@ -137,7 +137,7 @@ func StartBackgroundDaemon(b hal.Backend) error {
 	// If systemd is available and service is installed, use systemctl
 	if runtime.GOOS == "linux" {
 		if _, err := os.Stat("/etc/systemd/system/wattwarden.service"); err == nil {
-			_ = exec.Command("systemctl", "start", "wattwarden.service").Run()
+			_ = exec.Command("systemctl", "restart", "wattwarden.service").Run()
 			if IsDaemonActive() {
 				return nil
 			}
@@ -151,13 +151,16 @@ func StartBackgroundDaemon(b hal.Backend) error {
 		}
 	}
 
-	// If already active via in-process or detached, return
-	if b.IsDaemonRunning() || IsDaemonActive() {
-		return nil
+	// Also start in-process daemon
+	if !b.IsDaemonRunning() {
+		b.StartAutoExtremeDaemon()
 	}
 
 	// Otherwise spawn detached background daemon process
-	return SpawnDetachedDaemon()
+	if !IsDaemonActive() {
+		_ = SpawnDetachedDaemon()
+	}
+	return nil
 }
 
 // StopBackgroundDaemon stops the daemon locally and any background service/process
