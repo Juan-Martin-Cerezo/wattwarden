@@ -128,8 +128,27 @@ func RunDaemon(b hal.Backend) {
 	b.StopDaemon()
 }
 
+// SyncInstalledBinary updates /usr/local/bin/wattwarden to match current binary if running with root
+func SyncInstalledBinary() {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil || exe == "/usr/local/bin/wattwarden" {
+		return
+	}
+	if os.Geteuid() == 0 {
+		data, err := os.ReadFile(exe)
+		if err == nil {
+			_ = os.MkdirAll("/usr/local/bin", 0755)
+			_ = os.WriteFile("/usr/local/bin/wattwarden", data, 0755)
+		}
+	}
+}
+
 // StartBackgroundDaemon ensures the daemon is started in background
 func StartBackgroundDaemon(b hal.Backend) error {
+	SyncInstalledBinary()
 	cfg := LoadConfig()
 	cfg.AutoExtremeEnabled = true
 	_ = SaveConfig(cfg)
@@ -192,8 +211,9 @@ func StopBackgroundDaemon(b hal.Backend) {
 
 // InstallService installs the auto-start background service for the current OS
 func InstallService() error {
+	SyncInstalledBinary()
 	exePath, err := os.Executable()
-	if err != nil {
+	if err != nil || exePath != "/usr/local/bin/wattwarden" {
 		exePath = "/usr/local/bin/wattwarden"
 	}
 

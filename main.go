@@ -110,6 +110,8 @@ func main() { // The entry point of the WattWarden application
 		os.Exit(1)
 	}
 
+	service.SyncInstalledBinary()
+
 	if os.Getenv("WATTWARDEN_DAEMON") == "1" {
 		service.RunDaemon(hal.CurrentBackend)
 		return
