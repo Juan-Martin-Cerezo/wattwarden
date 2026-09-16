@@ -37,9 +37,30 @@ fn run_loop<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(250)).map_err(|e| WattWardenError::GeneralIo(e))? {
             if let Event::Key(key) = event::read().map_err(|e| WattWardenError::GeneralIo(e))? {
+                if key.kind != crossterm::event::KeyEventKind::Press {
+                    continue;
+                }
+
+                // If Extreme Mode confirmation modal is visible
+                if app.confirm_extreme {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            app.confirm_extreme_mode();
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app.cancel_extreme_mode();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
+                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                         app.should_quit = true;
+                    }
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        app.restore_defaults();
                     }
                     KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => {
                         app.prev_menu();

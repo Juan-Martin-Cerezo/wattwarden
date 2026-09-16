@@ -34,6 +34,7 @@ pub struct App {
     pub selected: usize,
     pub scroll_offset: usize,
     pub items: Vec<ActionItem>,
+    pub confirm_extreme: bool,
     pub toast: Option<(String, Instant)>,
     pub should_quit: bool,
     pub last_update: Instant,
@@ -42,12 +43,12 @@ pub struct App {
 impl App {
     pub fn new(backend: LinuxBackend, config: Config) -> Self {
         let mut items = vec![
-            ActionItem::Header("── MODES & AUTOMATION ──".into()),
+            ActionItem::Header("─── [ PROFILES ] ─────────────────────────".into()),
             ActionItem::ProfilePerformance,
             ActionItem::ProfileExtreme,
             ActionItem::ProfileAutoExtreme,
             ActionItem::ProfileRestore,
-            ActionItem::Header("── HARDWARE BOUNDARIES ──".into()),
+            ActionItem::Header("─── [ CPU HARDWARE ] ─────────────────────".into()),
             ActionItem::Cores,
             ActionItem::FreqLimit,
         ];
@@ -62,6 +63,7 @@ impl App {
         if backend.cpu.energy_performance_preference().is_ok() {
             items.push(ActionItem::Epp);
         }
+        items.push(ActionItem::Header("─── [ BATTERY & DISPLAY ] ────────────────".into()));
         if backend.backlight.is_some() {
             items.push(ActionItem::Brightness);
         }
@@ -69,7 +71,7 @@ impl App {
             items.push(ActionItem::ChargeLimit);
         }
 
-        items.push(ActionItem::Header("── POWER SAVING TOGGLES ──".into()));
+        items.push(ActionItem::Header("─── [ SYSTEM & AUTOMATION ] ──────────────".into()));
         items.push(ActionItem::AutoBrightness);
         items.push(ActionItem::DropCaches);
 
@@ -83,6 +85,7 @@ impl App {
             selected: initial_selected,
             scroll_offset: 0,
             items,
+            confirm_extreme: false,
             toast: None,
             should_quit: false,
             last_update: Instant::now(),
@@ -131,6 +134,28 @@ impl App {
         self.selected = prev;
     }
 
+    pub fn confirm_extreme_mode(&mut self) {
+        self.confirm_extreme = false;
+        let _ = self.backend.apply_profile(&PowerProfile::Extreme);
+        self.config.profile = PowerProfile::Extreme;
+        self.config.auto_extreme_enabled = false;
+        let _ = self.config.save(None);
+        self.set_toast("EXTREME MODE ACTIVATED");
+    }
+
+    pub fn cancel_extreme_mode(&mut self) {
+        self.confirm_extreme = false;
+    }
+
+    pub fn restore_defaults(&mut self) {
+        self.confirm_extreme = false;
+        let _ = self.backend.apply_profile(&PowerProfile::Normal);
+        self.config.profile = PowerProfile::Normal;
+        self.config.auto_extreme_enabled = false;
+        let _ = self.config.save(None);
+        self.set_toast("FACTORY DEFAULTS RESTORED");
+    }
+
     pub fn handle_enter(&mut self) {
         let item = &self.items[self.selected];
         match item {
@@ -139,28 +164,29 @@ impl App {
                 self.config.profile = PowerProfile::Performance;
                 self.config.auto_extreme_enabled = false;
                 let _ = self.config.save(None);
-                self.set_toast("Applied: High Performance Profile");
+                self.set_toast("PERFORMANCE MODE ACTIVATED");
             }
             ActionItem::ProfileExtreme => {
-                let _ = self.backend.apply_profile(&PowerProfile::Extreme);
-                self.config.profile = PowerProfile::Extreme;
-                self.config.auto_extreme_enabled = false;
-                let _ = self.config.save(None);
-                self.set_toast("Applied: Extreme Battery Saver");
+                self.confirm_extreme = true;
             }
             ActionItem::ProfileAutoExtreme => {
-                let _ = self.backend.apply_profile(&PowerProfile::AutoExtreme);
-                self.config.profile = PowerProfile::AutoExtreme;
-                self.config.auto_extreme_enabled = true;
-                let _ = self.config.save(None);
-                self.set_toast("Applied: Auto Extreme Mode (Adaptive)");
+                let is_active = self.config.profile == PowerProfile::AutoExtreme;
+                if is_active {
+                    let _ = self.backend.apply_profile(&PowerProfile::Normal);
+                    self.config.profile = PowerProfile::Normal;
+                    self.config.auto_extreme_enabled = false;
+                    let _ = self.config.save(None);
+                    self.set_toast("AUTO EXTREME DAEMON STOPPED");
+                } else {
+                    let _ = self.backend.apply_profile(&PowerProfile::AutoExtreme);
+                    self.config.profile = PowerProfile::AutoExtreme;
+                    self.config.auto_extreme_enabled = true;
+                    let _ = self.config.save(None);
+                    self.set_toast("AUTO EXTREME RUNNING (BACKGROUND)");
+                }
             }
             ActionItem::ProfileRestore => {
-                let _ = self.backend.apply_profile(&PowerProfile::Normal);
-                self.config.profile = PowerProfile::Normal;
-                self.config.auto_extreme_enabled = false;
-                let _ = self.config.save(None);
-                self.set_toast("Restored: Factory OS Defaults");
+                self.restore_defaults();
             }
             ActionItem::Turbo => {
                 if let Ok(cur) = self.backend.cpu.turbo_enabled() {
