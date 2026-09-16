@@ -263,53 +263,94 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ),
         ActionItem::ProfileAutoExtreme => (
             "⚡ Auto Extreme Mode",
-            if app.config.profile == PowerProfile::AutoExtreme { "[ACTIVE]".into() } else { "[OFF]".into() },
+            if app.config.profile == PowerProfile::AutoExtreme { "[ACTIVE]".into() } else { "[EXECUTE]".into() },
             app.config.profile == PowerProfile::AutoExtreme,
         ),
+        ActionItem::AutoBrightness => (
+            "Auto Brightness",
+            if app.config.auto_brightness { "[ACTIVE]".into() } else { "[OFF]".into() },
+            app.config.auto_brightness,
+        ),
         ActionItem::ProfileRestore => (
-            "🔄 Restore Defaults",
+            "♻  Restore Mode",
             "[EXECUTE]".into(),
             false,
         ),
         ActionItem::Cores => {
             let online = app.backend.cpu.online_cores().unwrap_or(1);
             let total = app.backend.cpu.num_cpus();
-            ("⚙️  CPU Cores Active", format!("[{}/{}]", online, total), false)
+            ("Active Cores", format!("[{} / {}]", online, total), false)
         }
         ActionItem::FreqLimit => {
             let freq = app.backend.cpu.freq_limit().unwrap_or(0);
-            ("📈 Max CPU Frequency", format!("[{} MHz]", freq), false)
+            ("CPU Freq (MHz)", format!("[{}]", freq), false)
+        }
+        ActionItem::GpuFreq => {
+            let g = app.backend.gpu.as_ref().and_then(|gpu| gpu.gpu_freq().ok()).unwrap_or(0);
+            ("Freq iGPU (MHz)", if g > 0 { format!("[{}]", g) } else { "[N/A]".into() }, false)
         }
         ActionItem::RaplPl1 => {
             let pl1 = app.backend.rapl.as_ref().and_then(|r| r.pl1_watts().ok()).unwrap_or(0);
-            ("⚡ Intel RAPL PL1 Limit", format!("[{} W]", pl1), false)
+            ("RAPL PL1 (W)", if pl1 > 0 { format!("[{}]", pl1) } else { "[N/A]".into() }, false)
         }
         ActionItem::RaplPl2 => {
             let pl2 = app.backend.rapl.as_ref().and_then(|r| r.pl2_watts().ok()).unwrap_or(0);
-            ("🚀 Intel RAPL PL2 Boost", format!("[{} W]", pl2), false)
+            ("RAPL PL2 (W)", if pl2 > 0 { format!("[{}]", pl2) } else { "[N/A]".into() }, false)
         }
         ActionItem::Turbo => {
             let t = app.backend.cpu.turbo_enabled().unwrap_or(false);
-            ("🔥 CPU Turbo / Boost", format!("[{}]", if t { "ON" } else { "OFF" }), t)
+            ("Turbo Boost", format!("[{}]", t), t)
         }
         ActionItem::Epp => {
             let epp = app.backend.cpu.energy_performance_preference().unwrap_or_else(|_| "N/A".into());
-            ("🎯 Energy Perf Preference (EPP)", format!("[{}]", epp), false)
+            ("Energy Perf Pref", format!("[{}]", epp), false)
+        }
+        ActionItem::Aspm => {
+            let policy = app.backend.aspm.as_ref().and_then(|a| a.aspm_policy().ok()).unwrap_or_else(|| "default".into());
+            ("PCIe ASPM Policy", format!("[{}]", policy), false)
         }
         ActionItem::Brightness => {
             let b = app.backend.backlight.as_ref().and_then(|bl| bl.brightness_percent().ok()).unwrap_or(0);
-            ("💡 Display Backlight Brightness", format!("[{}%]", b), false)
+            ("LCD Brightness (%)", format!("[{}%]", b), false)
+        }
+        ActionItem::KbdBacklight => {
+            let k = app.backend.peripherals.kbd_backlight().unwrap_or(false);
+            ("Keyboard Light", format!("[{}]", k), k)
+        }
+        ActionItem::Bluetooth => {
+            let bt = app.backend.peripherals.bluetooth_enabled().unwrap_or(false);
+            ("Bluetooth", format!("[{}]", bt), bt)
+        }
+        ActionItem::WifiEnable => {
+            let w = app.backend.peripherals.wifi_enabled().unwrap_or(false);
+            ("WiFi Enable", format!("[{}]", w), w)
         }
         ActionItem::ChargeLimit => {
             let t = app.backend.threshold.charge_threshold().unwrap_or(80);
-            ("🛡️  BMS Battery Charge Ceiling", format!("[{}%]", t), false)
+            ("BMS Battery Charge Ceiling", format!("[{}%]", t), false)
         }
-        ActionItem::AutoBrightness => {
-            let active = app.config.auto_brightness;
-            ("🤖 Auto-Brightness (Hyprland IPC)", format!("[{}]", if active { "ACTIVE" } else { "OFF" }), active)
+        ActionItem::WifiPowerSave => {
+            let ps = app.backend.tweaks.wifi_power_save().unwrap_or(false);
+            ("WiFi Power Save", format!("[{}]", ps), ps)
         }
-        ActionItem::DropCaches => {
-            ("🧹 Drop VM Memory Caches", "[CLEAN]".into(), false)
+        ActionItem::AudioPowerSave => {
+            let aps = app.backend.tweaks.audio_power_save().unwrap_or(false);
+            ("Audio Power Save", format!("[{}]", aps), aps)
+        }
+        ActionItem::Autosuspend => {
+            let a = app.backend.tweaks.autosuspend().unwrap_or(false);
+            ("Autosuspend PCI/USB", format!("[{}]", a), a)
+        }
+        ActionItem::Watchdog => {
+            let wd = app.backend.tweaks.nmi_watchdog().unwrap_or(false);
+            ("Watchdog Kernel", format!("[{}]", wd), wd)
+        }
+        ActionItem::VmWriteback => {
+            let wb = app.backend.tweaks.vm_writeback_seconds().unwrap_or(5);
+            ("VM Writeback (s)", format!("[{}]", wb), false)
+        }
+        ActionItem::ProcessPurge => {
+            ("Process Purge", "[EXECUTE]".into(), false)
         }
     }
 }

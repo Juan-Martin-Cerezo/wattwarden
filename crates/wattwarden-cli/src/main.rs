@@ -72,9 +72,55 @@ enum ServiceAction {
     Uninstall,
 }
 
+fn sync_installed_binary() {
+    if !is_root() {
+        return;
+    }
+    let Ok(current_exe) = std::env::current_exe() else {
+        return;
+    };
+    let target = std::path::Path::new("/usr/local/bin/wattwarden");
+    if current_exe == target {
+        return;
+    }
+    if let Ok(bytes) = std::fs::read(&current_exe) {
+        let _ = std::fs::create_dir_all("/usr/local/bin");
+        if std::fs::write(target, bytes).is_ok() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    sync_installed_binary();
+
+    // Normalize legacy Go flags to clap subcommands
+    let raw_args: Vec<String> = std::env::args().collect();
+    let mut normalized = vec![raw_args[0].clone()];
+    let mut i = 1;
+    while i < raw_args.len() {
+        match raw_args[i].as_str() {
+            "--daemon" => normalized.push("daemon".into()),
+            "--start" => normalized.push("start".into()),
+            "--stop" => normalized.push("stop".into()),
+            "--status" => normalized.push("status".into()),
+            "--brightness" => normalized.push("brightness".into()),
+            "--install-service" | "install-service" => {
+                normalized.push("service".into());
+                normalized.push("install".into());
+            }
+            "--uninstall-service" | "uninstall-service" => {
+                normalized.push("service".into());
+                normalized.push("uninstall".into());
+            }
+            other => normalized.push(other.into()),
+        }
+        i += 1;
+    }
+
+    let cli = Cli::parse_from(normalized);
 
     // Default to TUI if no subcommand provided
     let cmd = cli.command.unwrap_or(Commands::Tui);

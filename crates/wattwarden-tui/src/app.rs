@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 use wattwarden_core::*;
-use wattwarden_platform_linux::{sysfs, LinuxBackend};
+use wattwarden_platform_linux::LinuxBackend;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionItem {
@@ -8,17 +8,27 @@ pub enum ActionItem {
     ProfilePerformance,
     ProfileExtreme,
     ProfileAutoExtreme,
+    AutoBrightness,
     ProfileRestore,
     Cores,
     FreqLimit,
+    GpuFreq,
     RaplPl1,
     RaplPl2,
     Turbo,
     Epp,
+    Aspm,
     Brightness,
+    KbdBacklight,
+    Bluetooth,
+    WifiEnable,
     ChargeLimit,
-    AutoBrightness,
-    DropCaches,
+    WifiPowerSave,
+    AudioPowerSave,
+    Autosuspend,
+    Watchdog,
+    VmWriteback,
+    ProcessPurge,
 }
 
 impl ActionItem {
@@ -43,16 +53,20 @@ pub struct App {
 impl App {
     pub fn new(backend: LinuxBackend, config: Config) -> Self {
         let mut items = vec![
-            ActionItem::Header("─── [ PROFILES ] ─────────────────────────".into()),
+            ActionItem::Header("─── [ PROFILES ] ───────────────────────".into()),
             ActionItem::ProfilePerformance,
             ActionItem::ProfileExtreme,
             ActionItem::ProfileAutoExtreme,
+            ActionItem::AutoBrightness,
             ActionItem::ProfileRestore,
-            ActionItem::Header("─── [ CPU HARDWARE ] ─────────────────────".into()),
+            ActionItem::Header("─── [ HARDWARE LIMITS ] ────────────────".into()),
             ActionItem::Cores,
             ActionItem::FreqLimit,
         ];
 
+        if backend.gpu.is_some() {
+            items.push(ActionItem::GpuFreq);
+        }
         if backend.rapl.is_some() {
             items.push(ActionItem::RaplPl1);
             items.push(ActionItem::RaplPl2);
@@ -63,17 +77,28 @@ impl App {
         if backend.cpu.energy_performance_preference().is_ok() {
             items.push(ActionItem::Epp);
         }
-        items.push(ActionItem::Header("─── [ BATTERY & DISPLAY ] ────────────────".into()));
+        if backend.aspm.is_some() {
+            items.push(ActionItem::Aspm);
+        }
+
+        items.push(ActionItem::Header("─── [ PERIPHERALS ] ────────────────────".into()));
         if backend.backlight.is_some() {
             items.push(ActionItem::Brightness);
         }
+        items.push(ActionItem::KbdBacklight);
+        items.push(ActionItem::Bluetooth);
+        items.push(ActionItem::WifiEnable);
         if backend.threshold.supports_threshold() {
             items.push(ActionItem::ChargeLimit);
         }
 
-        items.push(ActionItem::Header("─── [ SYSTEM & AUTOMATION ] ──────────────".into()));
-        items.push(ActionItem::AutoBrightness);
-        items.push(ActionItem::DropCaches);
+        items.push(ActionItem::Header("─── [ SYSTEM TWEAKS ] ──────────────────".into()));
+        items.push(ActionItem::WifiPowerSave);
+        items.push(ActionItem::AudioPowerSave);
+        items.push(ActionItem::Autosuspend);
+        items.push(ActionItem::Watchdog);
+        items.push(ActionItem::VmWriteback);
+        items.push(ActionItem::ProcessPurge);
 
         // Find initial selectable index (skip first header)
         let initial_selected = items.iter().position(|i| !i.is_header()).unwrap_or(0);
@@ -153,7 +178,7 @@ impl App {
         self.config.profile = PowerProfile::Normal;
         self.config.auto_extreme_enabled = false;
         let _ = self.config.save(None);
-        self.set_toast("FACTORY DEFAULTS RESTORED");
+        self.set_toast("RESTORE MODE ACTIVATED");
     }
 
     pub fn handle_enter(&mut self) {
@@ -185,26 +210,23 @@ impl App {
                     self.set_toast("AUTO EXTREME RUNNING (BACKGROUND)");
                 }
             }
+            ActionItem::AutoBrightness => {
+                self.config.auto_brightness = !self.config.auto_brightness;
+                let _ = self.config.save(None);
+                self.set_toast(if self.config.auto_brightness {
+                    "AUTO BRIGHTNESS: ON"
+                } else {
+                    "AUTO BRIGHTNESS: OFF"
+                });
+            }
             ActionItem::ProfileRestore => {
                 self.restore_defaults();
             }
             ActionItem::Turbo => {
                 if let Ok(cur) = self.backend.cpu.turbo_enabled() {
                     let _ = self.backend.cpu.set_turbo_enabled(!cur);
-                    self.set_toast(format!("CPU Turbo: {}", if !cur { "ENABLED" } else { "DISABLED" }));
+                    self.set_toast(format!("TURBO BOOST: {}", if !cur { "ON" } else { "OFF" }));
                 }
-            }
-            ActionItem::AutoBrightness => {
-                self.config.auto_brightness = !self.config.auto_brightness;
-                let _ = self.config.save(None);
-                self.set_toast(format!(
-                    "Auto-Brightness (Hyprland): {}",
-                    if self.config.auto_brightness { "ACTIVE" } else { "OFF" }
-                ));
-            }
-            ActionItem::DropCaches => {
-                let _ = sysfs::write_sysfs_string("/proc/sys/vm/drop_caches", "3");
-                self.set_toast("Memory Purge: Filesystem caches dropped (RAM freed)");
             }
             ActionItem::Epp => {
                 if let Ok(cur) = self.backend.cpu.energy_performance_preference() {
@@ -215,8 +237,67 @@ impl App {
                         _ => "performance",
                     };
                     let _ = self.backend.cpu.set_energy_performance_preference(next);
-                    self.set_toast(format!("EPP preference set to: {}", next));
+                    self.set_toast(format!("ENERGY PERF PREF: {}", next));
                 }
+            }
+            ActionItem::Aspm => {
+                if let Some(aspm) = &self.backend.aspm {
+                    if let Ok(cur) = aspm.aspm_policy() {
+                        let next = match cur.as_str() {
+                            "powersave" => "performance",
+                            "performance" => "default",
+                            _ => "powersave",
+                        };
+                        let _ = aspm.set_aspm_policy(next);
+                        self.set_toast(format!("PCIE ASPM POLICY: {}", next));
+                    }
+                }
+            }
+            ActionItem::KbdBacklight => {
+                if let Ok(cur) = self.backend.peripherals.kbd_backlight() {
+                    let _ = self.backend.peripherals.set_kbd_backlight(!cur);
+                    self.set_toast(format!("KEYBOARD LIGHT: {}", if !cur { "ON" } else { "OFF" }));
+                }
+            }
+            ActionItem::Bluetooth => {
+                if let Ok(cur) = self.backend.peripherals.bluetooth_enabled() {
+                    let _ = self.backend.peripherals.set_bluetooth_enabled(!cur);
+                    self.set_toast(format!("BLUETOOTH: {}", if !cur { "ON" } else { "OFF" }));
+                }
+            }
+            ActionItem::WifiEnable => {
+                if let Ok(cur) = self.backend.peripherals.wifi_enabled() {
+                    let _ = self.backend.peripherals.set_wifi_enabled(!cur);
+                    self.set_toast(format!("WIFI ENABLE: {}", if !cur { "ON" } else { "OFF" }));
+                }
+            }
+            ActionItem::WifiPowerSave => {
+                if let Ok(cur) = self.backend.tweaks.wifi_power_save() {
+                    let _ = self.backend.tweaks.set_wifi_power_save(!cur);
+                    self.set_toast(format!("WIFI POWER SAVE: {}", if !cur { "ON" } else { "OFF" }));
+                }
+            }
+            ActionItem::AudioPowerSave => {
+                if let Ok(cur) = self.backend.tweaks.audio_power_save() {
+                    let _ = self.backend.tweaks.set_audio_power_save(!cur);
+                    self.set_toast(format!("AUDIO POWER SAVE: {}", if !cur { "ON" } else { "OFF" }));
+                }
+            }
+            ActionItem::Autosuspend => {
+                if let Ok(cur) = self.backend.tweaks.autosuspend() {
+                    let _ = self.backend.tweaks.set_autosuspend(!cur);
+                    self.set_toast(format!("AUTOSUSPEND PCI/USB: {}", if !cur { "ON" } else { "OFF" }));
+                }
+            }
+            ActionItem::Watchdog => {
+                if let Ok(cur) = self.backend.tweaks.nmi_watchdog() {
+                    let _ = self.backend.tweaks.set_nmi_watchdog(!cur);
+                    self.set_toast(format!("WATCHDOG KERNEL: {}", if !cur { "ON" } else { "OFF" }));
+                }
+            }
+            ActionItem::ProcessPurge => {
+                let _ = self.backend.tweaks.process_purge();
+                self.set_toast("PROCESSES PURGED");
             }
             _ => {}
         }
@@ -225,27 +306,76 @@ impl App {
     pub fn handle_left(&mut self) {
         let item = &self.items[self.selected];
         match item {
+            ActionItem::AutoBrightness => {
+                self.handle_enter();
+            }
             ActionItem::Cores => {
                 if let Ok(cur) = self.backend.cpu.online_cores() {
                     let next = cur.saturating_sub(1).max(1);
                     let _ = self.backend.cpu.set_online_cores(next);
-                    self.set_toast(format!("Online cores: {}/{}", next, self.backend.cpu.num_cpus()));
+                    self.set_toast(format!("ACTIVE CORES: {} / {}", next, self.backend.cpu.num_cpus()));
                 }
             }
             ActionItem::FreqLimit => {
                 if let Ok(cur) = self.backend.cpu.freq_limit() {
                     let (min_b, _) = self.backend.cpu.freq_bounds().unwrap_or((400, 3500));
-                    let next = cur.saturating_sub(200).max(min_b);
+                    let next = cur.saturating_sub(100).max(min_b);
                     let _ = self.backend.cpu.set_freq_limit(next);
-                    self.set_toast(format!("Max CPU Freq: {} MHz", next));
+                    self.set_toast(format!("CPU FREQ: {} MHz", next));
                 }
+            }
+            ActionItem::GpuFreq => {
+                if let Some(gpu) = &self.backend.gpu {
+                    if let Ok(cur) = gpu.gpu_freq() {
+                        let (min_g, _) = gpu.gpu_bounds().unwrap_or((300, 1100));
+                        let next = cur.saturating_sub(50).max(min_g);
+                        let _ = gpu.set_gpu_freq(next);
+                        self.set_toast(format!("FREQ IGPU: {} MHz", next));
+                    }
+                }
+            }
+            ActionItem::RaplPl1 => {
+                if let Some(rapl) = &self.backend.rapl {
+                    if let Ok(cur) = rapl.pl1_watts() {
+                        let (min_w, _) = rapl.rapl_bounds().unwrap_or((5, 115));
+                        let next = cur.saturating_sub(2).max(min_w);
+                        let _ = rapl.set_pl1_watts(next);
+                        self.set_toast(format!("RAPL PL1: {} W", next));
+                    }
+                }
+            }
+            ActionItem::RaplPl2 => {
+                if let Some(rapl) = &self.backend.rapl {
+                    if let Ok(cur) = rapl.pl2_watts() {
+                        let (min_w, _) = rapl.rapl_bounds().unwrap_or((5, 115));
+                        let next = cur.saturating_sub(2).max(min_w);
+                        let _ = rapl.set_pl2_watts(next);
+                        self.set_toast(format!("RAPL PL2: {} W", next));
+                    }
+                }
+            }
+            ActionItem::Turbo
+            | ActionItem::Epp
+            | ActionItem::Aspm
+            | ActionItem::KbdBacklight
+            | ActionItem::Bluetooth
+            | ActionItem::WifiEnable
+            | ActionItem::WifiPowerSave
+            | ActionItem::AudioPowerSave
+            | ActionItem::Autosuspend
+            | ActionItem::Watchdog => {
+                self.handle_enter();
             }
             ActionItem::Brightness => {
                 if let Some(bl) = &self.backend.backlight {
                     if let Ok(cur) = bl.brightness_percent() {
                         let next = cur.saturating_sub(5).max(1);
                         let _ = bl.set_brightness_percent(next);
-                        self.set_toast(format!("Brightness: {}%", next));
+                        if self.config.auto_brightness {
+                            self.config.auto_brightness = false;
+                            let _ = self.config.save(None);
+                        }
+                        self.set_toast(format!("LCD BRIGHTNESS: {}%", next));
                     }
                 }
             }
@@ -253,25 +383,14 @@ impl App {
                 if let Ok(cur) = self.backend.threshold.charge_threshold() {
                     let next = cur.saturating_sub(5).max(50);
                     let _ = self.backend.threshold.set_charge_threshold(next);
-                    self.set_toast(format!("Battery charge ceiling: {}%", next));
+                    self.set_toast(format!("CHARGE LIMIT: {}%", next));
                 }
             }
-            ActionItem::RaplPl1 => {
-                if let Some(rapl) = &self.backend.rapl {
-                    if let Ok(cur) = rapl.pl1_watts() {
-                        let next = cur.saturating_sub(5).max(5);
-                        let _ = rapl.set_pl1_watts(next);
-                        self.set_toast(format!("RAPL PL1 Limit: {} W", next));
-                    }
-                }
-            }
-            ActionItem::RaplPl2 => {
-                if let Some(rapl) = &self.backend.rapl {
-                    if let Ok(cur) = rapl.pl2_watts() {
-                        let next = cur.saturating_sub(5).max(5);
-                        let _ = rapl.set_pl2_watts(next);
-                        self.set_toast(format!("RAPL PL2 Boost: {} W", next));
-                    }
+            ActionItem::VmWriteback => {
+                if let Ok(cur) = self.backend.tweaks.vm_writeback_seconds() {
+                    let next = cur.saturating_sub(1).max(1);
+                    let _ = self.backend.tweaks.set_vm_writeback_seconds(next);
+                    self.set_toast(format!("VM WRITEBACK: {} s", next));
                 }
             }
             _ => {}
@@ -281,44 +400,41 @@ impl App {
     pub fn handle_right(&mut self) {
         let item = &self.items[self.selected];
         match item {
+            ActionItem::AutoBrightness => {
+                self.handle_enter();
+            }
             ActionItem::Cores => {
                 if let Ok(cur) = self.backend.cpu.online_cores() {
                     let next = (cur + 1).min(self.backend.cpu.num_cpus());
                     let _ = self.backend.cpu.set_online_cores(next);
-                    self.set_toast(format!("Online cores: {}/{}", next, self.backend.cpu.num_cpus()));
+                    self.set_toast(format!("ACTIVE CORES: {} / {}", next, self.backend.cpu.num_cpus()));
                 }
             }
             ActionItem::FreqLimit => {
                 if let Ok(cur) = self.backend.cpu.freq_limit() {
                     let (_, max_b) = self.backend.cpu.freq_bounds().unwrap_or((400, 3500));
-                    let next = (cur + 200).min(max_b);
+                    let next = (cur + 100).min(max_b);
                     let _ = self.backend.cpu.set_freq_limit(next);
-                    self.set_toast(format!("Max CPU Freq: {} MHz", next));
+                    self.set_toast(format!("CPU FREQ: {} MHz", next));
                 }
             }
-            ActionItem::Brightness => {
-                if let Some(bl) = &self.backend.backlight {
-                    if let Ok(cur) = bl.brightness_percent() {
-                        let next = (cur + 5).min(100);
-                        let _ = bl.set_brightness_percent(next);
-                        self.set_toast(format!("Brightness: {}%", next));
+            ActionItem::GpuFreq => {
+                if let Some(gpu) = &self.backend.gpu {
+                    if let Ok(cur) = gpu.gpu_freq() {
+                        let (_, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
+                        let next = (cur + 50).min(max_g);
+                        let _ = gpu.set_gpu_freq(next);
+                        self.set_toast(format!("FREQ IGPU: {} MHz", next));
                     }
-                }
-            }
-            ActionItem::ChargeLimit => {
-                if let Ok(cur) = self.backend.threshold.charge_threshold() {
-                    let next = (cur + 5).min(100);
-                    let _ = self.backend.threshold.set_charge_threshold(next);
-                    self.set_toast(format!("Battery charge ceiling: {}%", next));
                 }
             }
             ActionItem::RaplPl1 => {
                 if let Some(rapl) = &self.backend.rapl {
                     if let Ok(cur) = rapl.pl1_watts() {
                         let (_, max_w) = rapl.rapl_bounds().unwrap_or((5, 115));
-                        let next = (cur + 5).min(max_w);
+                        let next = (cur + 2).min(max_w);
                         let _ = rapl.set_pl1_watts(next);
-                        self.set_toast(format!("RAPL PL1 Limit: {} W", next));
+                        self.set_toast(format!("RAPL PL1: {} W", next));
                     }
                 }
             }
@@ -326,10 +442,49 @@ impl App {
                 if let Some(rapl) = &self.backend.rapl {
                     if let Ok(cur) = rapl.pl2_watts() {
                         let (_, max_w) = rapl.rapl_bounds().unwrap_or((5, 115));
-                        let next = (cur + 5).min(max_w);
+                        let next = (cur + 2).min(max_w);
                         let _ = rapl.set_pl2_watts(next);
-                        self.set_toast(format!("RAPL PL2 Boost: {} W", next));
+                        self.set_toast(format!("RAPL PL2: {} W", next));
                     }
+                }
+            }
+            ActionItem::Turbo
+            | ActionItem::Epp
+            | ActionItem::Aspm
+            | ActionItem::KbdBacklight
+            | ActionItem::Bluetooth
+            | ActionItem::WifiEnable
+            | ActionItem::WifiPowerSave
+            | ActionItem::AudioPowerSave
+            | ActionItem::Autosuspend
+            | ActionItem::Watchdog => {
+                self.handle_enter();
+            }
+            ActionItem::Brightness => {
+                if let Some(bl) = &self.backend.backlight {
+                    if let Ok(cur) = bl.brightness_percent() {
+                        let next = (cur + 5).min(100);
+                        let _ = bl.set_brightness_percent(next);
+                        if self.config.auto_brightness {
+                            self.config.auto_brightness = false;
+                            let _ = self.config.save(None);
+                        }
+                        self.set_toast(format!("LCD BRIGHTNESS: {}%", next));
+                    }
+                }
+            }
+            ActionItem::ChargeLimit => {
+                if let Ok(cur) = self.backend.threshold.charge_threshold() {
+                    let next = (cur + 5).min(100);
+                    let _ = self.backend.threshold.set_charge_threshold(next);
+                    self.set_toast(format!("CHARGE LIMIT: {}%", next));
+                }
+            }
+            ActionItem::VmWriteback => {
+                if let Ok(cur) = self.backend.tweaks.vm_writeback_seconds() {
+                    let next = (cur + 1).min(60);
+                    let _ = self.backend.tweaks.set_vm_writeback_seconds(next);
+                    self.set_toast(format!("VM WRITEBACK: {} s", next));
                 }
             }
             _ => {}

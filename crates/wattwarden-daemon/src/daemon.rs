@@ -169,12 +169,32 @@ impl DaemonRunner {
                     let (min_freq, _) = self.backend.cpu.freq_bounds().unwrap_or((400, 1600));
                     let _ = self.backend.cpu.set_freq_limit(min_freq);
                     let _ = self.backend.cpu.set_online_cores(2.min(self.backend.cpu.num_cpus()));
+                    if let Some(gpu) = &self.backend.gpu {
+                        let (min_g, _) = gpu.gpu_bounds().unwrap_or((300, 1100));
+                        let _ = gpu.set_gpu_freq(min_g);
+                    }
+                    if let Some(rapl) = &self.backend.rapl {
+                        let (min_w, _) = rapl.rapl_bounds().unwrap_or((5, 15));
+                        let _ = rapl.set_pl1_watts(min_w);
+                        let _ = rapl.set_pl2_watts(min_w);
+                    }
                 } else {
                     // Burst workload: scale up to maintain UI responsiveness
                     let (min_freq, max_freq) = self.backend.cpu.freq_bounds().unwrap_or((400, 3500));
                     let target_freq = (min_freq as f64 + (max_freq - min_freq) as f64 * normalized_load) as u32;
                     let _ = self.backend.cpu.set_freq_limit(target_freq);
                     let _ = self.backend.cpu.set_online_cores(self.backend.cpu.num_cpus());
+                    if let Some(gpu) = &self.backend.gpu {
+                        let (min_g, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
+                        let target_g = (min_g as f64 + (max_g - min_g) as f64 * normalized_load) as u32;
+                        let _ = gpu.set_gpu_freq(target_g);
+                    }
+                    if let Some(rapl) = &self.backend.rapl {
+                        let (min_w, max_w) = rapl.rapl_bounds().unwrap_or((5, 45));
+                        let target_w = (min_w as f64 + (max_w - min_w) as f64 * normalized_load) as u32;
+                        let _ = rapl.set_pl1_watts(target_w);
+                        let _ = rapl.set_pl2_watts(target_w);
+                    }
                 }
             }
         }

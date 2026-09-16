@@ -105,3 +105,82 @@ pub trait CStateTelemetry: Send + Sync {
     /// Returns idle C-states for a specific CPU core or the package average
     fn cstates(&self) -> Result<Vec<CStateInfo>>;
 }
+
+/// Integrated/Discrete GPU frequency scaling controller
+pub trait GpuController: Send + Sync {
+    /// Hardware minimum and maximum frequency boundaries in MHz
+    fn gpu_bounds(&self) -> Result<(u32, u32)>;
+
+    /// Current maximum GPU frequency in MHz
+    fn gpu_freq(&self) -> Result<u32>;
+
+    /// Set maximum GPU frequency in MHz
+    fn set_gpu_freq(&self, mhz: u32) -> Result<()>;
+}
+
+/// PCIe Active State Power Management (ASPM) controller
+pub trait AspmController: Send + Sync {
+    /// Read the currently active ASPM policy (e.g. "powersave", "performance", "default")
+    fn aspm_policy(&self) -> Result<String>;
+
+    /// Set the PCIe ASPM policy
+    fn set_aspm_policy(&self, policy: &str) -> Result<()>;
+}
+
+/// Hardware peripherals controller (keyboard backlight, Bluetooth, Wi-Fi radio)
+pub trait PeripheralsController: Send + Sync {
+    /// Read whether the keyboard backlight is illuminated
+    fn kbd_backlight(&self) -> Result<bool>;
+
+    /// Enable or disable the keyboard backlight
+    fn set_kbd_backlight(&self, enabled: bool) -> Result<()>;
+
+    /// Check if the Bluetooth radio is unblocked/active
+    fn bluetooth_enabled(&self) -> Result<bool>;
+
+    /// Enable or disable Bluetooth via rfkill
+    fn set_bluetooth_enabled(&self, enabled: bool) -> Result<()>;
+
+    /// Check if Wi-Fi radio is unblocked/active
+    fn wifi_enabled(&self) -> Result<bool>;
+
+    /// Enable or disable Wi-Fi radio via rfkill
+    fn set_wifi_enabled(&self, enabled: bool) -> Result<()>;
+}
+
+/// System and kernel energy tweaks (audio power save, autosuspend, watchdog, writeback)
+pub trait SystemTweaksController: Send + Sync {
+    /// Check whether Wi-Fi link power management is enabled
+    fn wifi_power_save(&self) -> Result<bool>;
+
+    /// Enable or disable Wi-Fi link power management
+    fn set_wifi_power_save(&self, enabled: bool) -> Result<()>;
+
+    /// Check whether audio codec power saving is enabled
+    fn audio_power_save(&self) -> Result<bool>;
+
+    /// Enable or disable audio codec power saving
+    fn set_audio_power_save(&self, enabled: bool) -> Result<()>;
+
+    /// Check whether USB/PCI runtime autosuspend is active
+    fn autosuspend(&self) -> Result<bool>;
+
+    /// Enable or disable USB/PCI runtime autosuspend
+    fn set_autosuspend(&self, enabled: bool) -> Result<()>;
+
+    /// Check whether kernel NMI Watchdog is enabled
+    fn nmi_watchdog(&self) -> Result<bool>;
+
+    /// Enable or disable kernel NMI Watchdog
+    fn set_nmi_watchdog(&self, enabled: bool) -> Result<()>;
+
+    /// Get dirty VM writeback interval in seconds
+    fn vm_writeback_seconds(&self) -> Result<u32>;
+
+    /// Set dirty VM writeback interval in seconds
+    fn set_vm_writeback_seconds(&self, seconds: u32) -> Result<()>;
+
+    /// Drop filesystem caches from memory (drop_caches = 3)
+    fn process_purge(&self) -> Result<()>;
+}
+

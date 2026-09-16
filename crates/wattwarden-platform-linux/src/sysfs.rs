@@ -24,6 +24,18 @@ pub fn read_sysfs_u64(path: impl AsRef<Path>) -> Result<u64> {
         })
 }
 
+pub fn read_sysfs_u32(path: impl AsRef<Path>) -> Result<u32> {
+    let p = path.as_ref();
+    let val_str = read_sysfs_string(p)?;
+    val_str
+        .parse::<u32>()
+        .map_err(|e| WattWardenError::ParseInt {
+            path: p.to_path_buf(),
+            val: val_str,
+            source: e,
+        })
+}
+
 pub fn read_sysfs_i64(path: impl AsRef<Path>) -> Result<i64> {
     let p = path.as_ref();
     let val_str = read_sysfs_string(p)?;
