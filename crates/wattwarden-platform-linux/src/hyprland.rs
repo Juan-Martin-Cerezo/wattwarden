@@ -1,0 +1,93 @@
+use serde::Deserialize;
+use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use wattwarden_core::CompositorFocus;
+
+#[derive(Debug, Deserialize)]
+struct HyprActiveWindow {
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    title: String,
+}
+
+pub struct HyprlandIpc {
+    cmd_socket_path: Option<PathBuf>,
+}
+
+impl HyprlandIpc {
+    pub fn new() -> Self {
+        let cmd_socket_path = Self::discover_socket(".socket.sock");
+        Self { cmd_socket_path }
+    }
+
+    pub fn discover_event_socket() -> Option<PathBuf> {
+        Self::discover_socket(".socket2.sock")
+    }
+
+    fn discover_socket(socket_name: &str) -> Option<PathBuf> {
+        // 1. Direct environment variable lookup
+        if let (Ok(runtime_dir), Ok(sig)) = (
+            std::env::var("XDG_RUNTIME_DIR"),
+            std::env::var("HYPRLAND_INSTANCE_SIGNATURE"),
+        ) {
+            let p = PathBuf::from(runtime_dir).join("hypr").join(sig).join(socket_name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+
+        // 2. Multi-user scan under /run/user/ (handles sudo/daemon root execution)
+        let run_user = Path::new("/run/user");
+        if let Ok(user_entries) = fs::read_dir(run_user) {
+            for user_entry in user_entries.flatten() {
+                let hypr_dir = user_entry.path().join("hypr");
+                if let Ok(hypr_entries) = fs::read_dir(hypr_dir) {
+                    for inst in hypr_entries.flatten() {
+                        let candidate = inst.path().join(socket_name);
+                        if candidate.exists() {
+                            return Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Default for HyprlandIpc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CompositorFocus for HyprlandIpc {
+    fn active_window_class(&self) -> Option<String> {
+        let path = self.cmd_socket_path.as_ref()?;
+        let mut stream = UnixStream::connect(path).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .ok()?;
+        stream
+            .set_write_timeout(Some(Duration::from_millis(50)))
+            .ok()?;
+
+        // Send JSON request for activewindow to Hyprland socket
+        stream.write_all(b"j/activewindow").ok()?;
+
+        let mut buffer = String::new();
+        stream.read_to_string(&mut buffer).ok()?;
+
+        if let Ok(win) = serde_json::from_str::<HyprActiveWindow>(&buffer) {
+            if !win.class.is_empty() {
+                return Some(win.class.to_lowercase());
+            }
+        }
+        None
+    }
+}

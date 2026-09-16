@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "crates/wattwarden-core",
+    "crates/wattwarden-platform-linux",
+    "crates/wattwarden-daemon",
+    "crates/wattwarden-tui",
+    "crates/wattwarden-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+authors = ["Juan Martín Cerezo <juanmartincerezo@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/Juan-Martin-Cerezo/wattwarden"
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+thiserror = "1.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+clap = { version = "4.5", features = ["derive", "cargo"] }
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
+nix = { version = "0.29", features = ["user", "signal", "socket", "process"] }
+futures = "0.3"

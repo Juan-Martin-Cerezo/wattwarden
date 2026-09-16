@@ -1,0 +1,22 @@
+[package]
+name = "wattwarden-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wattwarden"
+path = "src/main.rs"
+
+[dependencies]
+wattwarden-core = { path = "../wattwarden-core" }
+wattwarden-platform-linux = { path = "../wattwarden-platform-linux" }
+wattwarden-daemon = { path = "../wattwarden-daemon" }
+wattwarden-tui = { path = "../wattwarden-tui" }
+clap = { workspace = true, features = ["derive"] }
+anyhow.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+nix = { workspace = true, features = ["user", "signal", "process"] }

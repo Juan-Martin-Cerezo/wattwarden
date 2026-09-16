@@ -1,0 +1,16 @@
+[package]
+name = "wattwarden-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+wattwarden-core = { path = "../wattwarden-core" }
+wattwarden-platform-linux = { path = "../wattwarden-platform-linux" }
+tokio = { workspace = true, features = ["full"] }
+nix = { workspace = true, features = ["signal", "process"] }
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

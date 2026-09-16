@@ -1,0 +1,14 @@
+[package]
+name = "wattwarden-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+wattwarden-core = { path = "../wattwarden-core" }
+wattwarden-platform-linux = { path = "../wattwarden-platform-linux" }
+ratatui.workspace = true
+crossterm.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+thiserror.workspace = true

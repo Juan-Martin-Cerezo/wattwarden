@@ -1,0 +1,15 @@
+[package]
+name = "wattwarden-platform-linux"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+wattwarden-core = { path = "../wattwarden-core" }
+tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
+nix = { workspace = true, features = ["socket", "user"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
