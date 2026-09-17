@@ -9,7 +9,6 @@
 
 **Universal Hardware Power Governance & Telemetry Suite**
 
-
 ```text
  ██╗    ██╗ █████╗ ████████╗████████╗██╗    ██╗ █████╗ ██████╗ ██████╗ ███████╗███╗   ██╗
  ██║    ██║██╔══██╗╚══██╔══╝╚══██╔══╝██║    ██║██╔══██╗██╔══██╗██╔══██╗██╔════╝████╗  ██║
@@ -21,230 +20,115 @@
 
 </div>
 
-WattWarden is an industrial-grade, zero-overhead systems utility designed to give you absolute control over your machine's silicon power constraints. Re-engineered from the ground up in modern Rust, WattWarden replaces inefficient polling loops and child-process forks with direct Linux kernel Netlink event listening, native Hyprland/Wayland socket IPC, and hardware-level RAPL/C-State telemetry.
+Welcome to **WattWarden**, the ultimate hardware management tool designed to give you absolute ownership over your device's power constraints.
+
+In an era where operating systems and software abstractions often obscure direct hardware control, WattWarden empowers you to reclaim your machine. Whether your goal is to breathe new life into an aging laptop by dramatically extending its battery lifespan, or to unshackle your CPU and GPU for maximum raw performance, this tool provides the definitive solution. By interacting directly with system-level boundaries, it allows you to dynamically enforce extreme power-saving limits or unleash unrestrained computing power—all through a lightning-fast, highly optimized Terminal User Interface (TUI) or an autonomous background daemon.
 
 ---
 
-## 🌟 Key Architectural Features
+## 🌟 Why WattWarden?
 
-- **Zero-Polling Kernel Event Engine:** Leverages `NETLINK_KOBJECT_UEVENT` to awaken strictly upon AC plug/unplug and battery power events, achieving **0.00% CPU utilization** while idle.
-- **Hardware-Level RAPL Controls:** Directly governs Intel and AMD Running Average Power Limit (PL1 long-term and PL2 short-term) constraints through `/sys/class/powercap/`.
-- **Deep C-State Telemetry:** Inspects real-time CPU idle package residency (`C1`, `C6`, `C8`, `C10`) directly from sysfs, verifying genuine silicon dormancy.
-- **BMS Battery Charge Thresholds:** Natively governs battery charge ceilings (`charge_control_end_threshold`) to preserve Li-ion health by capping charges at configurable limits (e.g. 80%).
-- **Subprocess-Free Hyprland IPC:** Connects directly to Hyprland's UNIX domain socket (`.socket2.sock`) to adapt display brightness dynamically between terminal sessions and web browsers without spawning child processes.
-- **Compile-Time Typestate Governance:** Encodes power profiles (`Profile<Performance>`, `Profile<Extreme>`, `Profile<Normal>`) into Rust's type system to eliminate illegal hardware transitions at compile time.
-- **Zero-GC Terminal Dashboard (TUI):** Built with `ratatui` and `crossterm`, rendering real-time ASCII power discharge graphs, per-package wattage, and interactive hardware controls with 60 FPS responsiveness and no runtime garbage collection.
-
----
-
-## 🏗️ Workspace Architecture
-
-```text
-wattwarden/
-├── Cargo.toml                      # Multi-crate workspace definition
-├── crates/
-│   ├── wattwarden-core/            # Hardware traits, typestate patterns, and config schema
-│   ├── wattwarden-platform/        # Multi-OS hardware probing (Linux, macOS, Windows, Fallback)
-│   ├── wattwarden-daemon/          # Asynchronous Tokio event runner & systemd controller
-│   ├── wattwarden-tui/             # High-performance Ratatui terminal dashboard
-│   └── wattwarden-cli/             # Unified binary entry point (clap v4)
-├── .github/
-│   └── workflows/
-│       ├── ci.yml                  # Multi-OS continuous integration matrix
-│       └── release.yml             # Multi-OS automated release binary packaging
-├── Makefile                        # Build automation (make, make install)
-├── install.sh                      # Unix installer (Linux & macOS)
-├── install.ps1                     # Windows PowerShell installer
-├── uninstall.sh                    # Clean uninstallation script
-├── PHILOSOPHY.md                   # The Doctrine of Silicon Polymorphism
-├── AGENTS.md                       # AI coding agent operational directives
-├── ARCHITECTURE.md                 # Technical specification and probe hierarchy
-├── CONTRIBUTING.md                 # Contribution guidelines
-└── LICENSE                         # MIT License
-```
+- **Unleash or Constrain**: Push your CPU/GPU to absolute maximum performance, or cap it heavily to save battery using our dedicated **Extreme Mode**.
+- **Universal Adaptability**: Dynamically detects your system hardware limits (CPU cores, turbo boost, Intel RAPL limits, GPU bounds, battery metrics) and gracefully adapts the interface to precisely what your hardware supports.
+- **Cross-Platform Support**: Native power-management and hardware control backends for Linux (`sysfs`, RAPL, Netlink sockets, Wayland/Hyprland IPC), macOS (`pmset`, `ioreg`, `sysctl`), and Windows (`powercfg`, WMI, Win32 CIM APIs).
+- **Persistent Background Daemon**: Auto Extreme Mode and Auto-Brightness run continuously in the background as an OS service (`systemd`, `launchd`, or background runner), keeping your power optimized even after closing the terminal or rebooting.
+- **Intelligent Auto-Brightness**: Dynamically adjusts display brightness based on active window context (Terminals vs Browsers/IDEs) and AC charging state, with instant live toggle and manual override.
+- **Live Telemetry & ASCII Power Graph**: Track battery drain in Watts, charge percentage, BMS thresholds, and estimated battery time remaining in real time via an interactive, zero-overhead TUI power graph.
+- **Zero-Polling Kernel Architecture**: Built in modern Rust without subprocess forks or wasteful sleep loops, achieving virtually 0.00% CPU utilization while idling in the background.
 
 ---
 
-## 🚀 How to Install
+## 🚀 Installation & Usage
 
-WattWarden adapts to your operating system. Select your platform below for instructions:
+We provide pre-compiled, static binaries for all major operating systems and architectures.
 
-### 🐧 Linux
+### 🐧 Linux & 🍏 macOS Installation
 
-#### Automated Installer (Recommended)
+For Linux (`x86_64`, `aarch64`) and macOS (Intel or Apple Silicon), install and configure WattWarden automatically:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
 ```
-*Detects your architecture (`x86_64` or `aarch64`), installs the binary to `/usr/local/bin`, and configures the systemd background daemon.*
 
-#### Using Cargo
+This installer will:
+1. Detect your OS and CPU architecture.
+2. Download or compile the matching binary to `/usr/local/bin/wattwarden`.
+3. Register and start the background service (`systemd` on Linux or `launchd` on macOS).
+
+**To open the interactive TUI dashboard anytime:**
 ```bash
-cargo install --git https://github.com/Juan-Martin-Cerezo/wattwarden.git wattwarden-cli
-sudo $(which wattwarden) service install
+sudo wattwarden
 ```
 
-#### From Source
+#### Alternative: Build from Source
 ```bash
 git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
 cd wattwarden
 sudo make install
 ```
 
----
-
-### 🍏 macOS
-
-WattWarden on macOS natively interfaces with Apple battery metrics (`pmset`, `ioreg`), hardware core detection (`sysctl`), display brightness controls, and memory cache purging.
-
-#### Automated Installer
-```bash
-curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
-```
-
-#### Using Cargo
+#### Alternative: Cargo
 ```bash
 cargo install --git https://github.com/Juan-Martin-Cerezo/wattwarden.git wattwarden-cli
 ```
 
-#### From Source
-```bash
-git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
-cd wattwarden
-cargo build --release
-sudo cp target/release/wattwarden /usr/local/bin/
-```
+---
+
+### 🪟 Windows Installation
+
+1. Open PowerShell as Administrator and run:
+   ```powershell
+   irm https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.ps1 | iex
+   ```
+2. Or download `wattwarden-windows-x86_64.exe` directly from the [Releases page](https://github.com/Juan-Martin-Cerezo/wattwarden/releases/latest).
+3. *(Optional)* To install and run the background service automatically at system startup:
+   ```cmd
+   wattwarden --install-service
+   ```
 
 ---
 
-### 🪟 Windows
+## ⚙️ CLI Commands
 
-On Windows, WattWarden queries Win32 CIM battery sensors, WMI monitor brightness controllers, and native ACPI energy profiles via `powercfg`.
-
-#### PowerShell Quick Install
-Open an elevated PowerShell prompt and run:
-```powershell
-irm https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.ps1 | iex
-```
-
-#### Pre-Compiled Executable
-Download the latest `wattwarden-windows-x86_64.exe` directly from the [GitHub Releases](https://github.com/Juan-Martin-Cerezo/wattwarden/releases) page and place it in your `PATH`.
-
-#### Using Cargo
-```powershell
-cargo install --git https://github.com/Juan-Martin-Cerezo/wattwarden.git wattwarden-cli
-```
-
-#### From Source
-```powershell
-git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
-cd wattwarden
-cargo build --release
-```
-
----
-
-### 🐡 BSD & Other Unix Platforms
-
-For FreeBSD, OpenBSD, NetBSD, or Solaris, WattWarden compiles with an autonomous zero-panic fallback engine:
+WattWarden supports both intuitive subcommands and classic flags for rapid terminal workflows:
 
 ```bash
-git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
-cd wattwarden
-cargo build --release
-sudo cp target/release/wattwarden /usr/local/bin/
+sudo wattwarden                      # Launch interactive TUI Dashboard (Default)
+wattwarden status                   # Check daemon running status, battery drain & profile
+sudo wattwarden start               # Start background daemon/service
+sudo wattwarden stop                # Stop background daemon/service
+sudo wattwarden profile <name>      # Apply profile (normal, performance, extreme, auto)
+sudo wattwarden threshold <pct>     # Set battery charge limit percentage (e.g. 80%)
+sudo wattwarden brightness <val>    # Set display brightness (1-100) or toggle auto (on/off)
+sudo wattwarden service install     # Install & enable auto-start system service
+sudo wattwarden service uninstall   # Remove system background service
+sudo wattwarden daemon              # Run daemon in foreground (for systemd/launchd)
 ```
 
-
-
----
-
-## ⚡ CLI Usage & Commands
-
-WattWarden provides an intuitive CLI with full subcommand routing:
-
-### Subcommands
-
-| Command | Privileges | Description |
-| :--- | :---: | :--- |
-| `wattwarden` or `wattwarden tui` | Optional root | Launches the interactive TUI hardware dashboard |
-| `wattwarden status` | Non-root | Inspects real-time battery drain, active profile, and daemon state |
-| `sudo wattwarden profile <name>` | **Root** | Applies power profile (`normal`, `performance`, `extreme`, `auto`) |
-| `sudo wattwarden threshold <pct>`| **Root** | Configures BMS battery charge limit percentage (`50`–`100`) |
-| `sudo wattwarden brightness <val>`| **Root** | Adjusts display brightness (`1`–`100`) or toggles auto-brightness (`on`/`off`) |
-| `sudo wattwarden start` | **Root** | Starts background daemon process |
-| `sudo wattwarden stop` | **Root** | Gracefully stops active background daemon |
-| `sudo wattwarden daemon` | **Root** | Runs daemon in foreground (used by systemd unit) |
-| `sudo wattwarden service install`| **Root** | Installs and enables persistent auto-starting systemd service |
-| `sudo wattwarden service uninstall`| **Root** | Disables and removes systemd service |
-
-### Examples
-
-```bash
-# Inspect system status without root
-wattwarden status
-
-# Apply Extreme energy-saving profile
-sudo wattwarden profile extreme
-
-# Set battery charge stop limit to 80%
-sudo wattwarden threshold 80
-
-# Enable dynamic auto-brightness for Hyprland
-sudo wattwarden brightness on
-
-# Install systemd service for boot persistence
-sudo wattwarden service install
-```
+*Classic flags (`wattwarden --status`, `sudo wattwarden --start`, `sudo wattwarden --stop`) are fully supported as drop-in aliases.*
 
 ---
 
-## ⌨️ TUI Keyboard Controls
+## ⌨️ TUI Controls
 
-When running the interactive dashboard (`sudo wattwarden`):
-
-- **`↑` / `↓` or `W` / `S`**: Navigate menu items
-- **`←` / `→` or `A` / `D`**: Adjust hardware limits (online cores, frequency ceilings, GPU frequency, brightness, charge limit, VM writeback)
-- **`Enter`**: Toggle active profile or peripheral state (Wi-Fi, Bluetooth, Keyboard Backlight, ASPM, Turbo, EPP)
-- **`Y` / `N`**: Confirm or cancel Extreme Mode safety prompt
-- **`Q` or `Esc`**: Exit dashboard
-
----
-
-## ⚙️ Hardware Compatibility & Requirements
-
-- **Linux Kernel:** Version 5.10 or higher.
-- **Architectures:** `x86_64`, `aarch64`.
-- **Hardware Interfaces:**
-  - Standard ACPI battery & mains power supply (`/sys/class/power_supply/`)
-  - Intel/AMD CPU frequency scaling (`/sys/devices/system/cpu/`)
-  - Intel RAPL power cap interface (`/sys/class/powercap/intel-rapl:0`)
-  - Backlight controller (`/sys/class/backlight/`)
-  - Linux `rfkill` for radio peripherals
-- **Compositors:** Native IPC focus detection on **Hyprland** (Wayland); fallback graceful degradation on generic X11/Wayland.
+- **Up / Down** or **W / S**: Navigate menu options.
+- **Left / Right** or **A / D**: Adjust hardware limits or values (brightness, active cores, frequency bounds).
+- **Enter**: Trigger highlighted action or toggle profile (**Performance**, **Extreme**, **Auto Extreme**, **Restore**).
+- **+ / -**: Speed up or slow down the live power graph refresh rate.
+- **R**: Hotkey to instantly restore default system power settings.
+- **Q / Esc**: Exit the TUI (if Auto Extreme is active, the daemon remains running seamlessly in the background).
 
 ---
 
-## 🗑️ Uninstallation
+## 🏗️ Architecture & Philosophy
 
-To completely remove WattWarden, including the systemd service and binaries:
-```bash
-sudo ./uninstall.sh
-```
-Or via curl:
-```bash
-curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/uninstall.sh | bash
-```
+- [`PHILOSOPHY.md`](PHILOSOPHY.md): **The Doctrine of Silicon Polymorphism** (6 Cardinal Axioms of hardware adaptation).
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): Multi-crate modular architecture, dynamic probe chains, and capability discovery.
+- [`AGENTS.md`](AGENTS.md): Operational guidelines for autonomous coding agents and maintainers.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): Guidelines for code standards, testing, and contribution.
 
 ---
 
-## 🤝 Contributing
+## 📄 License
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on code standards, local testing, and pull request workflows.
-
----
-
-## 🛡️ License
-
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
-Authored with precision by **Juan Martín Cerezo**.
+WattWarden is distributed under the terms of the [MIT License](LICENSE).
