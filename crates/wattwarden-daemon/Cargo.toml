@@ -9,10 +9,12 @@ description.workspace = true
 
 [dependencies]
 wattwarden-core = { path = "../wattwarden-core" }
-wattwarden-platform-linux = { path = "../wattwarden-platform-linux" }
+wattwarden-platform = { path = "../wattwarden-platform" }
 tokio = { workspace = true, features = ["full"] }
-nix = { workspace = true, features = ["signal", "process"] }
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal", "process"] }

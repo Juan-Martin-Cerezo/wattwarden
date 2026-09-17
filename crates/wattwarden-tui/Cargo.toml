@@ -9,7 +9,7 @@ description.workspace = true
 
 [dependencies]
 wattwarden-core = { path = "../wattwarden-core" }
-wattwarden-platform-linux = { path = "../wattwarden-platform-linux" }
+wattwarden-platform = { path = "../wattwarden-platform" }
 ratatui.workspace = true
 crossterm.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }

@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/wattwarden-core",
-    "crates/wattwarden-platform-linux",
+    "crates/wattwarden-platform",
     "crates/wattwarden-daemon",
     "crates/wattwarden-tui",
     "crates/wattwarden-cli",

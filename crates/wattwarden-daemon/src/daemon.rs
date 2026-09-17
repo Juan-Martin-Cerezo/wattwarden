@@ -1,12 +1,14 @@
 use crate::pid::PidManager;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use tokio::io::AsyncBufReadExt;
+#[cfg(target_os = "linux")]
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
 use wattwarden_core::*;
-use wattwarden_platform_linux::{HyprlandIpc, LinuxBackend, NetlinkUeventListener};
+use wattwarden_platform::PlatformBackend as LinuxBackend;
 
 pub struct DaemonRunner {
     backend: Arc<LinuxBackend>,
@@ -44,42 +46,46 @@ impl DaemonRunner {
         // Apply configured profile
         let _ = self.backend.apply_profile(&self.config.profile);
 
-        let (event_tx, mut event_rx) = mpsc::channel::<String>(32);
+        let (_event_tx, mut event_rx) = mpsc::channel::<String>(32);
 
-        // Spawn Netlink uevent background listener thread (zero-polling AC/battery events)
-        let netlink_tx = event_tx.clone();
-        std::thread::spawn(move || {
-            if let Ok(listener) = NetlinkUeventListener::new() {
-                loop {
-                    match listener.wait_for_power_event() {
-                        Ok(event) => {
-                            let _ = netlink_tx.blocking_send(event);
-                        }
-                        Err(e) => {
-                            warn!("Netlink error: {}", e);
-                            std::thread::sleep(Duration::from_secs(5));
+        #[cfg(target_os = "linux")]
+        {
+            use wattwarden_platform::linux::{HyprlandIpc, NetlinkUeventListener};
+            // Spawn Netlink uevent background listener thread (zero-polling AC/battery events)
+            let netlink_tx = _event_tx.clone();
+            std::thread::spawn(move || {
+                if let Ok(listener) = NetlinkUeventListener::new() {
+                    loop {
+                        match listener.wait_for_power_event() {
+                            Ok(event) => {
+                                let _ = netlink_tx.blocking_send(event);
+                            }
+                            Err(e) => {
+                                warn!("Netlink error: {}", e);
+                                std::thread::sleep(Duration::from_secs(5));
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
 
-        // Spawn Hyprland socket2 async listener if available
-        let backend_hypr = Arc::clone(&self.backend);
-        let config_hypr = self.config.clone();
-        tokio::spawn(async move {
-            if let Some(socket_path) = HyprlandIpc::discover_event_socket() {
-                if let Ok(stream) = UnixStream::connect(socket_path).await {
-                    let mut reader = tokio::io::BufReader::new(stream).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        if let Some(payload) = line.strip_prefix("activewindow>>") {
-                            let class = payload.split(',').next().unwrap_or("").to_lowercase();
-                            Self::handle_window_change(&backend_hypr, &config_hypr, &class);
+            // Spawn Hyprland socket2 async listener if available
+            let backend_hypr = Arc::clone(&self.backend);
+            let config_hypr = self.config.clone();
+            tokio::spawn(async move {
+                if let Some(socket_path) = HyprlandIpc::discover_event_socket() {
+                    if let Ok(stream) = UnixStream::connect(socket_path).await {
+                        let mut reader = tokio::io::BufReader::new(stream).lines();
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            if let Some(payload) = line.strip_prefix("activewindow>>") {
+                                let class = payload.split(',').next().unwrap_or("").to_lowercase();
+                                Self::handle_window_change(&backend_hypr, &config_hypr, &class);
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+        }
 
         // Main event loop with signal trapping
         let mut ticker = interval(Duration::from_secs(10));
@@ -108,6 +114,7 @@ impl DaemonRunner {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     fn handle_window_change(backend: &LinuxBackend, config: &Config, class: &str) {
         if !config.auto_brightness {
             return;

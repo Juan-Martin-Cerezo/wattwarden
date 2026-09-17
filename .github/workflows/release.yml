@@ -19,11 +19,28 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: wattwarden-linux-x86_64
+            binary_name: wattwarden
             use_cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: wattwarden-linux-aarch64
+            binary_name: wattwarden
             use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact_name: wattwarden-macos-x86_64
+            binary_name: wattwarden
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact_name: wattwarden-macos-aarch64
+            binary_name: wattwarden
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact_name: wattwarden-windows-x86_64.exe
+            binary_name: wattwarden.exe
+            use_cross: false
 
     steps:
       - name: Checkout repository
@@ -45,11 +62,19 @@ jobs:
           else
             cargo build --release --target ${{ matrix.target }} -p wattwarden-cli
           fi
+        shell: bash
 
-      - name: Prepare artifact
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
         run: |
-          cp target/${{ matrix.target }}/release/wattwarden ${{ matrix.artifact_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.artifact_name }}
           chmod +x ${{ matrix.artifact_name }}
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.artifact_name }}
+        shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -76,6 +101,10 @@ jobs:
           files: |
             artifacts/wattwarden-linux-x86_64/wattwarden-linux-x86_64
             artifacts/wattwarden-linux-aarch64/wattwarden-linux-aarch64
+            artifacts/wattwarden-macos-x86_64/wattwarden-macos-x86_64
+            artifacts/wattwarden-macos-aarch64/wattwarden-macos-aarch64
+            artifacts/wattwarden-windows-x86_64.exe/wattwarden-windows-x86_64.exe
           generate_release_notes: true
           draft: false
           prerelease: false
+

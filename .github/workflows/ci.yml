@@ -11,8 +11,12 @@ env:
 
 jobs:
   check-and-test:
-    name: Lint, Test & Build
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} - Test & Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout repository
@@ -26,7 +30,8 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Check code formatting
+      - name: Check code formatting (Linux only)
+        if: runner.os == 'Linux'
         run: cargo fmt --check
 
       - name: Run clippy linter
@@ -37,3 +42,4 @@ jobs:
 
       - name: Build release binary
         run: cargo build --workspace --release --verbose
+

@@ -1,5 +1,5 @@
 [package]
-name = "wattwarden-platform-linux"
+name = "wattwarden-platform"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -10,8 +10,10 @@ description.workspace = true
 [dependencies]
 wattwarden-core = { path = "../wattwarden-core" }
 tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
-nix = { workspace = true, features = ["socket", "user"] }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["socket", "user"] }

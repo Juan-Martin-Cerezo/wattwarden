@@ -1,7 +1,11 @@
-use nix::unistd::Uid;
-
+#[cfg(unix)]
 pub fn is_root() -> bool {
-    Uid::effective().is_root()
+    nix::unistd::Uid::effective().is_root()
+}
+
+#[cfg(not(unix))]
+pub fn is_root() -> bool {
+    true
 }
 
 pub fn require_root() -> Result<(), String> {

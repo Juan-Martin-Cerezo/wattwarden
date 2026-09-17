@@ -913,7 +913,7 @@ dependencies = [
  "tracing-subscriber",
  "wattwarden-core",
  "wattwarden-daemon",
- "wattwarden-platform-linux",
+ "wattwarden-platform",
  "wattwarden-tui",
 ]
 
@@ -937,11 +937,11 @@ dependencies = [
  "tokio",
  "tracing",
  "wattwarden-core",
- "wattwarden-platform-linux",
+ "wattwarden-platform",
 ]
 
 [[package]]
-name = "wattwarden-platform-linux"
+name = "wattwarden-platform"
 version = "2.0.0"
 dependencies = [
  "nix",
@@ -962,7 +962,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "wattwarden-core",
- "wattwarden-platform-linux",
+ "wattwarden-platform",
 ]
 
 [[package]]

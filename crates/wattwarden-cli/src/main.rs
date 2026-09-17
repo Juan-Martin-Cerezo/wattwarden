@@ -8,7 +8,7 @@ use wattwarden_core::*;
 use wattwarden_daemon::{
     install_systemd_service, uninstall_systemd_service, DaemonRunner, PidManager,
 };
-use wattwarden_platform_linux::LinuxBackend;
+use wattwarden_platform::PlatformBackend as LinuxBackend;
 use wattwarden_tui::{run_tui, App};
 
 #[derive(Parser)]
@@ -88,8 +88,11 @@ fn sync_installed_binary() {
     if let Ok(bytes) = std::fs::read(&current_exe) {
         let _ = std::fs::create_dir_all("/usr/local/bin");
         if std::fs::write(target, bytes).is_ok() {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o755));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o755));
+            }
         }
     }
 }
@@ -191,10 +194,15 @@ async fn main() -> anyhow::Result<()> {
             }
             let pid_mgr = PidManager::new();
             if let Some(pid) = pid_mgr.read_pid() {
+                #[cfg(unix)]
                 let _ = nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid),
                     nix::sys::signal::Signal::SIGTERM,
                 );
+                #[cfg(not(unix))]
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .status();
                 pid_mgr.release();
                 println!("🛑 WattWarden daemon (PID {}) stopped.", pid);
             } else {

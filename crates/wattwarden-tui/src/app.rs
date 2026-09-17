@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 use wattwarden_core::*;
-use wattwarden_platform_linux::LinuxBackend;
+use wattwarden_platform::PlatformBackend as LinuxBackend;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionItem {
