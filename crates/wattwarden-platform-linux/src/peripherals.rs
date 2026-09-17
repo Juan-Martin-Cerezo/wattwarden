@@ -1,8 +1,8 @@
+use crate::sysfs::{read_sysfs_string, read_sysfs_u32, write_sysfs_string};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use wattwarden_core::{PeripheralsController, Result};
-use crate::sysfs::{read_sysfs_string, read_sysfs_u32, write_sysfs_string};
 
 #[derive(Debug, Clone, Default)]
 pub struct LinuxPeripherals;
@@ -56,10 +56,9 @@ impl LinuxPeripherals {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Ok(t) = read_sysfs_string(path.join("type")) {
-                    if t.trim() == target_type {
-                        if write_sysfs_string(path.join("soft"), val).is_ok() {
-                            wrote = true;
-                        }
+                    if t.trim() == target_type && write_sysfs_string(path.join("soft"), val).is_ok()
+                    {
+                        wrote = true;
                     }
                 }
             }
@@ -89,7 +88,8 @@ impl PeripheralsController for LinuxPeripherals {
         let leds = Self::find_kbd_leds();
         for p in leds {
             if enabled {
-                let max = read_sysfs_string(p.join("max_brightness")).unwrap_or_else(|_| "1".into());
+                let max =
+                    read_sysfs_string(p.join("max_brightness")).unwrap_or_else(|_| "1".into());
                 let _ = write_sysfs_string(p.join("brightness"), &max);
             } else {
                 let _ = write_sysfs_string(p.join("brightness"), "0");

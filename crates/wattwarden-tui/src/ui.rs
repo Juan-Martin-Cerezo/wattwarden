@@ -45,7 +45,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // 1. Draw Centered ASCII Banner
     let art_y = 1;
     let art_x = (w.saturating_sub(68)) / 2;
-    let title_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let title_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
 
     for (i, line) in ASCII_LOGO.iter().enumerate() {
         set_str(buf, art_x, art_y + i, line, title_style);
@@ -55,8 +57,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let is_charging = app.backend.battery.is_charging().unwrap_or(false);
     let batt_pct = app.backend.battery.battery_percentage().unwrap_or(0);
     let watts = app.backend.battery.consumption_watts().unwrap_or(0.0);
-    let est = app.backend.battery.time_remaining().unwrap_or_else(|_| "N/A".into());
-    let status_str = if is_charging { "Charging" } else { "Discharging" };
+    let est = app
+        .backend
+        .battery
+        .time_remaining()
+        .unwrap_or_else(|_| "N/A".into());
+    let status_str = if is_charging {
+        "Charging"
+    } else {
+        "Discharging"
+    };
 
     let summary = format!(
         "OS: Linux | Battery: {}% ({}) | Est: {} | Power: {:.1}W",
@@ -64,7 +74,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
     let info_y = art_y + ASCII_LOGO.len() + 1;
     let info_x = (w.saturating_sub(summary.len())) / 2;
-    set_str(buf, info_x, info_y, &summary, Style::default().add_modifier(Modifier::BOLD));
+    set_str(
+        buf,
+        info_x,
+        info_y,
+        &summary,
+        Style::default().add_modifier(Modifier::BOLD),
+    );
 
     // 3. Layout Dimensions Calculation
     let is_horizontal = w >= 130;
@@ -116,7 +132,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 toast_x,
                 toast_y,
                 &toast_str,
-                Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(Color::Yellow)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
             );
         }
     }
@@ -128,7 +147,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // 9. Draw Footer Controls Help
     let footer_text = "[UP/DOWN] Navigate | [L/R] Adjust | [ENTER] Apply | [R] Restore | [Q] Quit";
-    set_str(buf, 2, h.saturating_sub(1), footer_text, Style::default().fg(Color::DarkGray));
+    set_str(
+        buf,
+        2,
+        h.saturating_sub(1),
+        footer_text,
+        Style::default().fg(Color::DarkGray),
+    );
 }
 
 fn draw_bar_graph(
@@ -149,11 +174,23 @@ fn draw_bar_graph(
     // Draw left axis
     for y_offset in 0..height {
         let screen_y = start_y + height - 1 - y_offset;
-        set_str(buf, start_x, screen_y, "│", Style::default().fg(Color::DarkGray));
+        set_str(
+            buf,
+            start_x,
+            screen_y,
+            "│",
+            Style::default().fg(Color::DarkGray),
+        );
     }
     // Draw bottom axis
     let bottom_line = format!("└{}", "─".repeat(plot_w));
-    set_str(buf, start_x, start_y + height, &bottom_line, Style::default().fg(Color::DarkGray));
+    set_str(
+        buf,
+        start_x,
+        start_y + height,
+        &bottom_line,
+        Style::default().fg(Color::DarkGray),
+    );
 
     // Plot historical data columns
     for i in 0..plot_w {
@@ -177,11 +214,7 @@ fn draw_bar_graph(
         for y_offset in 0..height {
             let screen_y = start_y + height - 1 - y_offset;
             let dots_in_row = total_dots.saturating_sub(y_offset * 8);
-            let char_idx = if dots_in_row >= 8 {
-                8
-            } else {
-                dots_in_row
-            };
+            let char_idx = if dots_in_row >= 8 { 8 } else { dots_in_row };
 
             if char_idx > 0 {
                 let color = if y_offset >= height.saturating_sub(2) {
@@ -217,18 +250,47 @@ fn draw_bar_graph(
             Color::Green
         };
 
-        set_str(buf, start_x + width - 12, screen_y, "│ ", Style::default().fg(Color::DarkGray));
-        set_str(buf, start_x + width - 10, screen_y, &format!("{:4.1} W", val_label), Style::default().fg(color));
+        set_str(
+            buf,
+            start_x + width - 12,
+            screen_y,
+            "│ ",
+            Style::default().fg(Color::DarkGray),
+        );
+        set_str(
+            buf,
+            start_x + width - 10,
+            screen_y,
+            &format!("{:4.1} W", val_label),
+            Style::default().fg(color),
+        );
     }
 }
 
 fn draw_cstates(buf: &mut Buffer, x: usize, y: usize, width: usize, app: &App) {
-    let header_line = format!("─── [ CPU C-STATE RESIDENCY ] {}", "─".repeat(width.saturating_sub(32)));
-    set_str(buf, x, y, &header_line, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let header_line = format!(
+        "─── [ CPU C-STATE RESIDENCY ] {}",
+        "─".repeat(width.saturating_sub(32))
+    );
+    set_str(
+        buf,
+        x,
+        y,
+        &header_line,
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let cstates = app.backend.cpu.cstates().unwrap_or_default();
     if cstates.is_empty() {
-        set_str(buf, x + 2, y + 2, "No cpuidle C-state telemetry detected", Style::default().fg(Color::DarkGray));
+        set_str(
+            buf,
+            x + 2,
+            y + 2,
+            "No cpuidle C-state telemetry detected",
+            Style::default().fg(Color::DarkGray),
+        );
         return;
     }
 
@@ -238,7 +300,13 @@ fn draw_cstates(buf: &mut Buffer, x: usize, y: usize, width: usize, app: &App) {
     for (i, state) in cstates.iter().take(8).enumerate() {
         let time_ms = state.time_microseconds / 1000;
         let item_str = format!("{:<4}: {:>7}ms", state.name, time_ms);
-        set_str(buf, x + col_offset, y + row_offset, &item_str, Style::default().fg(Color::LightGreen));
+        set_str(
+            buf,
+            x + col_offset,
+            y + row_offset,
+            &item_str,
+            Style::default().fg(Color::LightGreen),
+        );
 
         col_offset += 18;
         if (i + 1) % 3 == 0 {
@@ -253,29 +321,41 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ActionItem::Header(_) => ("", "".into(), false),
         ActionItem::ProfilePerformance => (
             "⚡ Performance Mode",
-            if app.config.profile == PowerProfile::Performance { "[ACTIVE]".into() } else { "[EXECUTE]".into() },
+            if app.config.profile == PowerProfile::Performance {
+                "[ACTIVE]".into()
+            } else {
+                "[EXECUTE]".into()
+            },
             app.config.profile == PowerProfile::Performance,
         ),
         ActionItem::ProfileExtreme => (
             "🔋 Extreme Mode",
-            if app.config.profile == PowerProfile::Extreme { "[ACTIVE]".into() } else { "[EXECUTE]".into() },
+            if app.config.profile == PowerProfile::Extreme {
+                "[ACTIVE]".into()
+            } else {
+                "[EXECUTE]".into()
+            },
             app.config.profile == PowerProfile::Extreme,
         ),
         ActionItem::ProfileAutoExtreme => (
             "⚡ Auto Extreme Mode",
-            if app.config.profile == PowerProfile::AutoExtreme { "[ACTIVE]".into() } else { "[EXECUTE]".into() },
+            if app.config.profile == PowerProfile::AutoExtreme {
+                "[ACTIVE]".into()
+            } else {
+                "[EXECUTE]".into()
+            },
             app.config.profile == PowerProfile::AutoExtreme,
         ),
         ActionItem::AutoBrightness => (
             "Auto Brightness",
-            if app.config.auto_brightness { "[ACTIVE]".into() } else { "[OFF]".into() },
+            if app.config.auto_brightness {
+                "[ACTIVE]".into()
+            } else {
+                "[OFF]".into()
+            },
             app.config.auto_brightness,
         ),
-        ActionItem::ProfileRestore => (
-            "♻  Restore Mode",
-            "[EXECUTE]".into(),
-            false,
-        ),
+        ActionItem::ProfileRestore => ("♻  Restore Mode", "[EXECUTE]".into(), false),
         ActionItem::Cores => {
             let online = app.backend.cpu.online_cores().unwrap_or(1);
             let total = app.backend.cpu.num_cpus();
@@ -286,31 +366,84 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
             ("CPU Freq (MHz)", format!("[{}]", freq), false)
         }
         ActionItem::GpuFreq => {
-            let g = app.backend.gpu.as_ref().and_then(|gpu| gpu.gpu_freq().ok()).unwrap_or(0);
-            ("Freq iGPU (MHz)", if g > 0 { format!("[{}]", g) } else { "[N/A]".into() }, false)
+            let g = app
+                .backend
+                .gpu
+                .as_ref()
+                .and_then(|gpu| gpu.gpu_freq().ok())
+                .unwrap_or(0);
+            (
+                "Freq iGPU (MHz)",
+                if g > 0 {
+                    format!("[{}]", g)
+                } else {
+                    "[N/A]".into()
+                },
+                false,
+            )
         }
         ActionItem::RaplPl1 => {
-            let pl1 = app.backend.rapl.as_ref().and_then(|r| r.pl1_watts().ok()).unwrap_or(0);
-            ("RAPL PL1 (W)", if pl1 > 0 { format!("[{}]", pl1) } else { "[N/A]".into() }, false)
+            let pl1 = app
+                .backend
+                .rapl
+                .as_ref()
+                .and_then(|r| r.pl1_watts().ok())
+                .unwrap_or(0);
+            (
+                "RAPL PL1 (W)",
+                if pl1 > 0 {
+                    format!("[{}]", pl1)
+                } else {
+                    "[N/A]".into()
+                },
+                false,
+            )
         }
         ActionItem::RaplPl2 => {
-            let pl2 = app.backend.rapl.as_ref().and_then(|r| r.pl2_watts().ok()).unwrap_or(0);
-            ("RAPL PL2 (W)", if pl2 > 0 { format!("[{}]", pl2) } else { "[N/A]".into() }, false)
+            let pl2 = app
+                .backend
+                .rapl
+                .as_ref()
+                .and_then(|r| r.pl2_watts().ok())
+                .unwrap_or(0);
+            (
+                "RAPL PL2 (W)",
+                if pl2 > 0 {
+                    format!("[{}]", pl2)
+                } else {
+                    "[N/A]".into()
+                },
+                false,
+            )
         }
         ActionItem::Turbo => {
             let t = app.backend.cpu.turbo_enabled().unwrap_or(false);
             ("Turbo Boost", format!("[{}]", t), t)
         }
         ActionItem::Epp => {
-            let epp = app.backend.cpu.energy_performance_preference().unwrap_or_else(|_| "N/A".into());
+            let epp = app
+                .backend
+                .cpu
+                .energy_performance_preference()
+                .unwrap_or_else(|_| "N/A".into());
             ("Energy Perf Pref", format!("[{}]", epp), false)
         }
         ActionItem::Aspm => {
-            let policy = app.backend.aspm.as_ref().and_then(|a| a.aspm_policy().ok()).unwrap_or_else(|| "default".into());
+            let policy = app
+                .backend
+                .aspm
+                .as_ref()
+                .and_then(|a| a.aspm_policy().ok())
+                .unwrap_or_else(|| "default".into());
             ("PCIe ASPM Policy", format!("[{}]", policy), false)
         }
         ActionItem::Brightness => {
-            let b = app.backend.backlight.as_ref().and_then(|bl| bl.brightness_percent().ok()).unwrap_or(0);
+            let b = app
+                .backend
+                .backlight
+                .as_ref()
+                .and_then(|bl| bl.brightness_percent().ok())
+                .unwrap_or(0);
             ("LCD Brightness (%)", format!("[{}%]", b), false)
         }
         ActionItem::KbdBacklight => {
@@ -349,9 +482,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
             let wb = app.backend.tweaks.vm_writeback_seconds().unwrap_or(5);
             ("VM Writeback (s)", format!("[{}]", wb), false)
         }
-        ActionItem::ProcessPurge => {
-            ("Process Purge", "[EXECUTE]".into(), false)
-        }
+        ActionItem::ProcessPurge => ("Process Purge", "[EXECUTE]".into(), false),
     }
 }
 
@@ -377,7 +508,15 @@ fn draw_menu(
     if app.scroll_offset > 0 {
         let msg = " ▲ SCROLL UP FOR MORE OPTIONS ▲ ";
         let msg_x = menu_x + (menu_w.saturating_sub(msg.len())) / 2;
-        set_str(buf, msg_x, menu_y.saturating_sub(1), msg, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        set_str(
+            buf,
+            msg_x,
+            menu_y.saturating_sub(1),
+            msg,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
     }
 
     for i in 0..visible_items {
@@ -390,21 +529,44 @@ fn draw_menu(
         let y = menu_y + i;
 
         if let ActionItem::Header(header_title) = item {
-            set_str(buf, menu_x, y, header_title, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+            set_str(
+                buf,
+                menu_x,
+                y,
+                header_title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            );
             continue;
         }
 
         let (name, val_str, is_active) = get_item_info(item, app);
         let max_name_len = menu_w.saturating_sub(20).max(5);
         let truncated_name = if name.chars().count() > max_name_len {
-            format!("{}...", name.chars().take(max_name_len.saturating_sub(3)).collect::<String>())
+            format!(
+                "{}...",
+                name.chars()
+                    .take(max_name_len.saturating_sub(3))
+                    .collect::<String>()
+            )
         } else {
             name.to_string()
         };
 
         let is_selected = idx == app.selected;
-        let line_text = format!(" > {:<width$} {:>15} ", truncated_name, val_str, width = max_name_len);
-        let normal_text = format!("   {:<width$} {:>15} ", truncated_name, val_str, width = max_name_len);
+        let line_text = format!(
+            " > {:<width$} {:>15} ",
+            truncated_name,
+            val_str,
+            width = max_name_len
+        );
+        let normal_text = format!(
+            "   {:<width$} {:>15} ",
+            truncated_name,
+            val_str,
+            width = max_name_len
+        );
 
         if is_selected {
             set_str(
@@ -412,7 +574,10 @@ fn draw_menu(
                 menu_x,
                 y,
                 &line_text,
-                Style::default().fg(Color::Blue).bg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Blue)
+                    .bg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             );
         } else if is_active {
             set_str(
@@ -420,10 +585,18 @@ fn draw_menu(
                 menu_x,
                 y,
                 &normal_text,
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             );
         } else {
-            set_str(buf, menu_x, y, &normal_text, Style::default().fg(Color::White));
+            set_str(
+                buf,
+                menu_x,
+                y,
+                &normal_text,
+                Style::default().fg(Color::White),
+            );
         }
     }
 
@@ -431,7 +604,13 @@ fn draw_menu(
     if visible_items < app.items.len() {
         let bar_x = menu_x + menu_w;
         for r in 0..visible_items {
-            set_str(buf, bar_x, menu_y + r, "│", Style::default().fg(Color::DarkGray));
+            set_str(
+                buf,
+                bar_x,
+                menu_y + r,
+                "│",
+                Style::default().fg(Color::DarkGray),
+            );
         }
 
         let scrollbar_height = ((visible_items * visible_items) / app.items.len()).max(1);
@@ -439,7 +618,13 @@ fn draw_menu(
             / (app.items.len().saturating_sub(visible_items)).max(1);
 
         for r in 0..scrollbar_height {
-            set_str(buf, bar_x, menu_y + scrollbar_pos + r, "█", Style::default().fg(Color::White));
+            set_str(
+                buf,
+                bar_x,
+                menu_y + scrollbar_pos + r,
+                "█",
+                Style::default().fg(Color::White),
+            );
         }
     }
 
@@ -447,7 +632,15 @@ fn draw_menu(
     if app.scroll_offset + visible_items < app.items.len() {
         let msg = " ▼ SCROLL DOWN FOR MORE OPTIONS ▼ ";
         let msg_x = menu_x + (menu_w.saturating_sub(msg.len())) / 2;
-        set_str(buf, msg_x, menu_y + visible_items, msg, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        set_str(
+            buf,
+            msg_x,
+            menu_y + visible_items,
+            msg,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
     }
 }
 
@@ -457,28 +650,63 @@ fn draw_extreme_modal(buf: &mut Buffer, w: usize, h: usize) {
     let box_x = (w.saturating_sub(box_w)) / 2;
     let box_y = (h.saturating_sub(box_h)) / 2;
 
-    let border_style = Style::default().fg(Color::Red).bg(Color::Black).add_modifier(Modifier::BOLD);
-    let text_style = Style::default().fg(Color::White).bg(Color::Black).add_modifier(Modifier::BOLD);
-    let warn_style = Style::default().fg(Color::Yellow).bg(Color::Black).add_modifier(Modifier::BOLD);
+    let border_style = Style::default()
+        .fg(Color::Red)
+        .bg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    let text_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    let warn_style = Style::default()
+        .fg(Color::Yellow)
+        .bg(Color::Black)
+        .add_modifier(Modifier::BOLD);
 
     let blank = " ".repeat(box_w);
     for r in 0..box_h {
-        set_str(buf, box_x, box_y + r, &blank, Style::default().bg(Color::Black));
+        set_str(
+            buf,
+            box_x,
+            box_y + r,
+            &blank,
+            Style::default().bg(Color::Black),
+        );
     }
 
     // Border box
-    set_str(buf, box_x, box_y, &format!("╭{}╮", "─".repeat(box_w.saturating_sub(2))), border_style);
+    set_str(
+        buf,
+        box_x,
+        box_y,
+        &format!("╭{}╮", "─".repeat(box_w.saturating_sub(2))),
+        border_style,
+    );
     for r in 1..(box_h.saturating_sub(1)) {
         set_str(buf, box_x, box_y + r, "│", border_style);
         set_str(buf, box_x + box_w - 1, box_y + r, "│", border_style);
     }
-    set_str(buf, box_x, box_y + box_h - 1, &format!("╰{}╯", "─".repeat(box_w.saturating_sub(2))), border_style);
+    set_str(
+        buf,
+        box_x,
+        box_y + box_h - 1,
+        &format!("╰{}╯", "─".repeat(box_w.saturating_sub(2))),
+        border_style,
+    );
 
     // Content lines inside modal
     let lines = [
         (1, "⚠️  WARNING: EXTREME MODE", warn_style),
-        (3, "This will minimize all hardware performance.", text_style),
-        (4, "Press 'R' at any time to restore normal operation.", Style::default().fg(Color::DarkGray).bg(Color::Black)),
+        (
+            3,
+            "This will minimize all hardware performance.",
+            text_style,
+        ),
+        (
+            4,
+            "Press 'R' at any time to restore normal operation.",
+            Style::default().fg(Color::DarkGray).bg(Color::Black),
+        ),
         (6, "[ Y - Confirm ]    [ N - Cancel ]", warn_style),
     ];
 

@@ -77,3 +77,33 @@ impl Drop for PidManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pid_manager_lifecycle() {
+        let tmp_path = std::env::temp_dir().join(format!("ww_pid_test_{}.pid", std::process::id()));
+        let mgr = PidManager::with_path(tmp_path.clone());
+
+        assert!(!mgr.is_running());
+        assert_eq!(mgr.read_pid(), None);
+
+        // Acquire
+        mgr.acquire().expect("should acquire PID lock");
+        assert!(mgr.is_running());
+        assert_eq!(mgr.read_pid(), Some(std::process::id() as i32));
+
+        // Cannot acquire again while running
+        let second_mgr = PidManager::with_path(tmp_path.clone());
+        assert!(second_mgr.acquire().is_err());
+
+        // Release
+        mgr.release();
+        assert!(!mgr.is_running());
+        assert_eq!(mgr.read_pid(), None);
+
+        let _ = fs::remove_file(tmp_path);
+    }
+}

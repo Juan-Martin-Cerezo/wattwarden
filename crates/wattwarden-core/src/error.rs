@@ -37,11 +37,7 @@ pub enum WattWardenError {
     PermissionDenied(String),
 
     #[error("Value out of hardware bounds: {value} is not in range [{min}, {max}]")]
-    OutOfBounds {
-        value: u64,
-        min: u64,
-        max: u64,
-    },
+    OutOfBounds { value: u64, min: u64, max: u64 },
 
     #[error("Unsupported hardware feature: {0}")]
     Unsupported(String),

@@ -25,7 +25,10 @@ impl DaemonRunner {
 
     pub async fn run(self) -> Result<()> {
         self.pid_mgr.acquire()?;
-        info!("WattWarden daemon started successfully with PID {}", std::process::id());
+        info!(
+            "WattWarden daemon started successfully with PID {}",
+            std::process::id()
+        );
 
         // Apply saved charge limit threshold if configured
         if let Some(limit) = self.config.battery_charge_limit {
@@ -69,8 +72,7 @@ impl DaemonRunner {
                 if let Ok(stream) = UnixStream::connect(socket_path).await {
                     let mut reader = tokio::io::BufReader::new(stream).lines();
                     while let Ok(Some(line)) = reader.next_line().await {
-                        if line.starts_with("activewindow>>") {
-                            let payload = &line["activewindow>>".len()..];
+                        if let Some(payload) = line.strip_prefix("activewindow>>") {
                             let class = payload.split(',').next().unwrap_or("").to_lowercase();
                             Self::handle_window_change(&backend_hypr, &config_hypr, &class);
                         }
@@ -168,7 +170,10 @@ impl DaemonRunner {
                     // Idle workload: aggressive throttling
                     let (min_freq, _) = self.backend.cpu.freq_bounds().unwrap_or((400, 1600));
                     let _ = self.backend.cpu.set_freq_limit(min_freq);
-                    let _ = self.backend.cpu.set_online_cores(2.min(self.backend.cpu.num_cpus()));
+                    let _ = self
+                        .backend
+                        .cpu
+                        .set_online_cores(2.min(self.backend.cpu.num_cpus()));
                     if let Some(gpu) = &self.backend.gpu {
                         let (min_g, _) = gpu.gpu_bounds().unwrap_or((300, 1100));
                         let _ = gpu.set_gpu_freq(min_g);
@@ -180,18 +185,25 @@ impl DaemonRunner {
                     }
                 } else {
                     // Burst workload: scale up to maintain UI responsiveness
-                    let (min_freq, max_freq) = self.backend.cpu.freq_bounds().unwrap_or((400, 3500));
-                    let target_freq = (min_freq as f64 + (max_freq - min_freq) as f64 * normalized_load) as u32;
+                    let (min_freq, max_freq) =
+                        self.backend.cpu.freq_bounds().unwrap_or((400, 3500));
+                    let target_freq =
+                        (min_freq as f64 + (max_freq - min_freq) as f64 * normalized_load) as u32;
                     let _ = self.backend.cpu.set_freq_limit(target_freq);
-                    let _ = self.backend.cpu.set_online_cores(self.backend.cpu.num_cpus());
+                    let _ = self
+                        .backend
+                        .cpu
+                        .set_online_cores(self.backend.cpu.num_cpus());
                     if let Some(gpu) = &self.backend.gpu {
                         let (min_g, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
-                        let target_g = (min_g as f64 + (max_g - min_g) as f64 * normalized_load) as u32;
+                        let target_g =
+                            (min_g as f64 + (max_g - min_g) as f64 * normalized_load) as u32;
                         let _ = gpu.set_gpu_freq(target_g);
                     }
                     if let Some(rapl) = &self.backend.rapl {
                         let (min_w, max_w) = rapl.rapl_bounds().unwrap_or((5, 45));
-                        let target_w = (min_w as f64 + (max_w - min_w) as f64 * normalized_load) as u32;
+                        let target_w =
+                            (min_w as f64 + (max_w - min_w) as f64 * normalized_load) as u32;
                         let _ = rapl.set_pl1_watts(target_w);
                         let _ = rapl.set_pl2_watts(target_w);
                     }

@@ -14,6 +14,11 @@ edition = "2021"
 authors = ["Juan Martín Cerezo <juanmartincerezo@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/Juan-Martin-Cerezo/wattwarden"
+homepage = "https://github.com/Juan-Martin-Cerezo/wattwarden"
+readme = "README.md"
+description = "Industrial-grade hardware power governance and telemetry suite for Linux"
+keywords = ["power-management", "battery", "energy", "tui", "linux"]
+categories = ["command-line-utilities", "hardware-support", "system"]
 
 [workspace.dependencies]
 tokio = { version = "1.40", features = ["full"] }

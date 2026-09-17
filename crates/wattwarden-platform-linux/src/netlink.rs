@@ -30,8 +30,12 @@ impl NetlinkUeventListener {
     pub fn wait_for_power_event(&self) -> Result<String> {
         let mut buf = [0u8; 4096];
         loop {
-            let bytes_read = recv(self.fd.as_raw_fd(), &mut buf, nix::sys::socket::MsgFlags::empty())
-                .map_err(|e| WattWardenError::Ipc(format!("Netlink recv error: {}", e)))?;
+            let bytes_read = recv(
+                self.fd.as_raw_fd(),
+                &mut buf,
+                nix::sys::socket::MsgFlags::empty(),
+            )
+            .map_err(|e| WattWardenError::Ipc(format!("Netlink recv error: {}", e)))?;
 
             if bytes_read > 0 {
                 let msg = String::from_utf8_lossy(&buf[..bytes_read]);

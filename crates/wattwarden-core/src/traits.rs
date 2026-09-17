@@ -183,4 +183,3 @@ pub trait SystemTweaksController: Send + Sync {
     /// Drop filesystem caches from memory (drop_caches = 3)
     fn process_purge(&self) -> Result<()>;
 }
-

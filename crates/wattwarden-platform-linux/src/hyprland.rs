@@ -35,7 +35,10 @@ impl HyprlandIpc {
             std::env::var("XDG_RUNTIME_DIR"),
             std::env::var("HYPRLAND_INSTANCE_SIGNATURE"),
         ) {
-            let p = PathBuf::from(runtime_dir).join("hypr").join(sig).join(socket_name);
+            let p = PathBuf::from(runtime_dir)
+                .join("hypr")
+                .join(sig)
+                .join(socket_name);
             if p.exists() {
                 return Some(p);
             }

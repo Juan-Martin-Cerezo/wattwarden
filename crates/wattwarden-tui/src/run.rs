@@ -11,11 +11,11 @@ use std::time::Duration;
 use wattwarden_core::*;
 
 pub fn run_tui(mut app: App) -> Result<()> {
-    enable_raw_mode().map_err(|e| WattWardenError::GeneralIo(e))?;
+    enable_raw_mode().map_err(WattWardenError::GeneralIo)?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen).map_err(|e| WattWardenError::GeneralIo(e))?;
+    execute!(out, EnterAlternateScreen).map_err(WattWardenError::GeneralIo)?;
     let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend).map_err(|e| WattWardenError::GeneralIo(e))?;
+    let mut terminal = Terminal::new(backend).map_err(WattWardenError::GeneralIo)?;
 
     let res = run_loop(&mut terminal, &mut app);
 
@@ -27,16 +27,15 @@ pub fn run_tui(mut app: App) -> Result<()> {
     res
 }
 
-fn run_loop<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()> {
+fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     while !app.should_quit {
         app.tick();
-        terminal.draw(|f| draw(f, app)).map_err(|e| WattWardenError::GeneralIo(e))?;
+        terminal
+            .draw(|f| draw(f, app))
+            .map_err(WattWardenError::GeneralIo)?;
 
-        if event::poll(Duration::from_millis(250)).map_err(|e| WattWardenError::GeneralIo(e))? {
-            if let Event::Key(key) = event::read().map_err(|e| WattWardenError::GeneralIo(e))? {
+        if event::poll(Duration::from_millis(250)).map_err(WattWardenError::GeneralIo)? {
+            if let Event::Key(key) = event::read().map_err(WattWardenError::GeneralIo)? {
                 if key.kind != crossterm::event::KeyEventKind::Press {
                     continue;
                 }

@@ -1,7 +1,7 @@
+use crate::sysfs::{read_sysfs_string, read_sysfs_u32, write_sysfs_string};
 use std::fs;
 use std::process::Command;
 use wattwarden_core::{Result, SystemTweaksController};
-use crate::sysfs::{read_sysfs_string, read_sysfs_u32, write_sysfs_string};
 
 #[derive(Debug, Clone, Default)]
 pub struct LinuxSystemTweaks;
@@ -30,7 +30,10 @@ impl SystemTweaksController for LinuxSystemTweaks {
     fn wifi_power_save(&self) -> Result<bool> {
         // First check iw dev
         for iface in Self::find_wifi_interfaces() {
-            if let Ok(output) = Command::new("iw").args(["dev", &iface, "get", "power_save"]).output() {
+            if let Ok(output) = Command::new("iw")
+                .args(["dev", &iface, "get", "power_save"])
+                .output()
+            {
                 let out = String::from_utf8_lossy(&output.stdout);
                 if out.contains("Power save: on") {
                     return Ok(true);
@@ -47,7 +50,9 @@ impl SystemTweaksController for LinuxSystemTweaks {
     fn set_wifi_power_save(&self, enabled: bool) -> Result<()> {
         let iw_state = if enabled { "on" } else { "off" };
         for iface in Self::find_wifi_interfaces() {
-            let _ = Command::new("iw").args(["dev", &iface, "set", "power_save", iw_state]).status();
+            let _ = Command::new("iw")
+                .args(["dev", &iface, "set", "power_save", iw_state])
+                .status();
         }
         let driver_val = if enabled { "Y" } else { "N" };
         let _ = write_sysfs_string("/sys/module/iwlwifi/parameters/power_save", driver_val);
@@ -65,7 +70,10 @@ impl SystemTweaksController for LinuxSystemTweaks {
         let ps_val = if enabled { "1" } else { "0" };
         let ctrl_val = if enabled { "Y" } else { "N" };
         let _ = write_sysfs_string("/sys/module/snd_hda_intel/parameters/power_save", ps_val);
-        let _ = write_sysfs_string("/sys/module/snd_hda_intel/parameters/power_save_controller", ctrl_val);
+        let _ = write_sysfs_string(
+            "/sys/module/snd_hda_intel/parameters/power_save_controller",
+            ctrl_val,
+        );
         Ok(())
     }
 

@@ -46,8 +46,12 @@ WantedBy=multi-user.target
 }
 
 pub fn uninstall_systemd_service() -> Result<()> {
-    let _ = Command::new("systemctl").args(["stop", "wattwarden"]).status();
-    let _ = Command::new("systemctl").args(["disable", "wattwarden"]).status();
+    let _ = Command::new("systemctl")
+        .args(["stop", "wattwarden"])
+        .status();
+    let _ = Command::new("systemctl")
+        .args(["disable", "wattwarden"])
+        .status();
 
     if Path::new(SYSTEMD_UNIT_PATH).exists() {
         let _ = fs::remove_file(SYSTEMD_UNIT_PATH);

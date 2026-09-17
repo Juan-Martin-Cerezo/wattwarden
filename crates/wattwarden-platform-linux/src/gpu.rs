@@ -1,6 +1,6 @@
+use crate::sysfs::{read_sysfs_u32, write_sysfs_string};
 use std::path::{Path, PathBuf};
 use wattwarden_core::{GpuController, Result, WattWardenError};
-use crate::sysfs::{read_sysfs_u32, write_sysfs_string};
 
 #[derive(Debug, Clone)]
 pub struct LinuxGpu {
@@ -17,7 +17,9 @@ impl LinuxGpu {
                 });
             }
         }
-        Err(WattWardenError::InterfaceNotFound("No integrated or discrete GPU frequency sysfs node found".into()))
+        Err(WattWardenError::InterfaceNotFound(
+            "No integrated or discrete GPU frequency sysfs node found".into(),
+        ))
     }
 }
 

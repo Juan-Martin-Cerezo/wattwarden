@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum PowerProfile {
     #[serde(rename = "Normal")]
+    #[default]
     Normal,
     #[serde(rename = "Performance")]
     Performance,
@@ -13,12 +14,6 @@ pub enum PowerProfile {
     Extreme,
     #[serde(rename = "Auto Extreme")]
     AutoExtreme,
-}
-
-impl Default for PowerProfile {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 impl std::fmt::Display for PowerProfile {
@@ -97,8 +92,11 @@ impl Default for Config {
 impl Config {
     pub fn default_path() -> PathBuf {
         if cfg!(windows) {
-            let program_data = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
-            PathBuf::from(program_data).join("wattwarden").join("config.json")
+            let program_data =
+                std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
+            PathBuf::from(program_data)
+                .join("wattwarden")
+                .join("config.json")
         } else {
             PathBuf::from("/etc/wattwarden/config.json")
         }
@@ -122,10 +120,7 @@ impl Config {
         }
 
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(&p, json).map_err(|e| WattWardenError::Io {
-            path: p,
-            source: e,
-        })?;
+        fs::write(&p, json).map_err(|e| WattWardenError::Io { path: p, source: e })?;
         Ok(())
     }
 }

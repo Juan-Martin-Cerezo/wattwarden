@@ -31,35 +31,49 @@ pub struct DeviceGovernor<S: ProfileState> {
 
 impl DeviceGovernor<Normal> {
     pub fn new() -> Self {
-        Self { _state: PhantomData }
+        Self {
+            _state: PhantomData,
+        }
     }
 
     pub fn to_performance(self) -> DeviceGovernor<Performance> {
-        DeviceGovernor { _state: PhantomData }
+        DeviceGovernor {
+            _state: PhantomData,
+        }
     }
 
     pub fn to_extreme(self) -> DeviceGovernor<Extreme> {
-        DeviceGovernor { _state: PhantomData }
+        DeviceGovernor {
+            _state: PhantomData,
+        }
     }
 }
 
 impl DeviceGovernor<Performance> {
     pub fn to_normal(self) -> DeviceGovernor<Normal> {
-        DeviceGovernor { _state: PhantomData }
+        DeviceGovernor {
+            _state: PhantomData,
+        }
     }
 
     pub fn to_extreme(self) -> DeviceGovernor<Extreme> {
-        DeviceGovernor { _state: PhantomData }
+        DeviceGovernor {
+            _state: PhantomData,
+        }
     }
 }
 
 impl DeviceGovernor<Extreme> {
     pub fn to_normal(self) -> DeviceGovernor<Normal> {
-        DeviceGovernor { _state: PhantomData }
+        DeviceGovernor {
+            _state: PhantomData,
+        }
     }
 
     pub fn to_performance(self) -> DeviceGovernor<Performance> {
-        DeviceGovernor { _state: PhantomData }
+        DeviceGovernor {
+            _state: PhantomData,
+        }
     }
 }
 

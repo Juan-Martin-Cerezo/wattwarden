@@ -1,4 +1,6 @@
-use crate::sysfs::{glob_dirs, read_sysfs_string, read_sysfs_u64, write_sysfs_string, write_sysfs_u64};
+use crate::sysfs::{
+    glob_dirs, read_sysfs_string, read_sysfs_u64, write_sysfs_string, write_sysfs_u64,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use wattwarden_core::{CStateInfo, CStateTelemetry, CpuGovernor, Result, WattWardenError};
@@ -14,7 +16,11 @@ impl LinuxCpuGovernor {
         cpu_dirs.retain(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|name| name.strip_prefix("cpu").map(|num| num.parse::<u32>().is_ok()).unwrap_or(false))
+                .map(|name| {
+                    name.strip_prefix("cpu")
+                        .map(|num| num.parse::<u32>().is_ok())
+                        .unwrap_or(false)
+                })
                 .unwrap_or(false)
         });
         cpu_dirs.sort_by_key(|p| {
@@ -118,7 +124,9 @@ impl CpuGovernor for LinuxCpuGovernor {
             return Ok(boost == 1);
         }
 
-        Err(WattWardenError::Unsupported("CPU Turbo/Boost interface not found".into()))
+        Err(WattWardenError::Unsupported(
+            "CPU Turbo/Boost interface not found".into(),
+        ))
     }
 
     fn set_turbo_enabled(&self, enabled: bool) -> Result<()> {
@@ -134,7 +142,9 @@ impl CpuGovernor for LinuxCpuGovernor {
             return write_sysfs_u64(boost_path, boost);
         }
 
-        Err(WattWardenError::Unsupported("Cannot set turbo: interface not found".into()))
+        Err(WattWardenError::Unsupported(
+            "Cannot set turbo: interface not found".into(),
+        ))
     }
 
     fn energy_performance_preference(&self) -> Result<String> {
@@ -142,7 +152,9 @@ impl CpuGovernor for LinuxCpuGovernor {
         if path.exists() {
             return read_sysfs_string(path);
         }
-        Err(WattWardenError::Unsupported("EPP interface not found".into()))
+        Err(WattWardenError::Unsupported(
+            "EPP interface not found".into(),
+        ))
     }
 
     fn set_energy_performance_preference(&self, pref: &str) -> Result<()> {
@@ -164,8 +176,13 @@ impl CStateTelemetry for LinuxCpuGovernor {
         if let Ok(entries) = fs::read_dir(cpuidle_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("state")).unwrap_or(false) {
-                    let name = read_sysfs_string(p.join("name")).unwrap_or_else(|_| "Unknown".into());
+                if p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("state"))
+                    .unwrap_or(false)
+                {
+                    let name =
+                        read_sysfs_string(p.join("name")).unwrap_or_else(|_| "Unknown".into());
                     let time_us = read_sysfs_u64(p.join("time")).unwrap_or(0);
                     let usage = read_sysfs_u64(p.join("usage")).unwrap_or(0);
 

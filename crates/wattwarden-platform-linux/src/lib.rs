@@ -132,7 +132,9 @@ impl LinuxBackend {
                 let (_, max_freq) = self.cpu.freq_bounds().unwrap_or((400, 3500));
                 let _ = self.cpu.set_freq_limit(max_freq);
                 let _ = self.cpu.set_turbo_enabled(true);
-                let _ = self.cpu.set_energy_performance_preference("balance_performance");
+                let _ = self
+                    .cpu
+                    .set_energy_performance_preference("balance_performance");
 
                 if let Some(rapl) = &self.rapl {
                     let _ = rapl.set_pl1_watts(45);

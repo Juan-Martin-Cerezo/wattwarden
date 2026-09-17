@@ -89,16 +89,42 @@ mod tests {
 
     #[test]
     fn test_read_write_sysfs() {
-        let dir = std::env::temp_dir().join("wattwarden_test");
+        let dir = std::env::temp_dir().join(format!("wattwarden_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let test_file = dir.join("test_val");
 
         write_sysfs_string(&test_file, "42000").unwrap();
         assert_eq!(read_sysfs_string(&test_file).unwrap(), "42000");
         assert_eq!(read_sysfs_u64(&test_file).unwrap(), 42000);
+        assert_eq!(read_sysfs_u32(&test_file).unwrap(), 42000);
         assert_eq!(read_sysfs_i64(&test_file).unwrap(), 42000);
+
+        // ParseInt error handling
+        write_sysfs_string(&test_file, "not_a_number").unwrap();
+        assert!(read_sysfs_u64(&test_file).is_err());
+        assert!(read_sysfs_u32(&test_file).is_err());
+        assert!(read_sysfs_i64(&test_file).is_err());
+
+        // Missing file error handling
+        let missing = dir.join("non_existent_file");
+        assert!(read_sysfs_string(&missing).is_err());
 
         let _ = fs::remove_file(test_file);
         let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn test_glob_dirs() {
+        let dir = std::env::temp_dir().join(format!("ww_glob_test_{}", std::process::id()));
+        let _ = fs::create_dir_all(dir.join("prefix_alpha"));
+        let _ = fs::create_dir_all(dir.join("prefix_beta"));
+        let _ = fs::create_dir_all(dir.join("other_gamma"));
+
+        let found = glob_dirs(dir.to_str().unwrap(), "prefix_");
+        assert_eq!(found.len(), 2);
+        assert!(found[0].to_str().unwrap().contains("prefix_alpha"));
+        assert!(found[1].to_str().unwrap().contains("prefix_beta"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

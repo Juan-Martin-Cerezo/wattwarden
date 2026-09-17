@@ -81,7 +81,9 @@ impl App {
             items.push(ActionItem::Aspm);
         }
 
-        items.push(ActionItem::Header("─── [ PERIPHERALS ] ────────────────────".into()));
+        items.push(ActionItem::Header(
+            "─── [ PERIPHERALS ] ────────────────────".into(),
+        ));
         if backend.backlight.is_some() {
             items.push(ActionItem::Brightness);
         }
@@ -92,7 +94,9 @@ impl App {
             items.push(ActionItem::ChargeLimit);
         }
 
-        items.push(ActionItem::Header("─── [ SYSTEM TWEAKS ] ──────────────────".into()));
+        items.push(ActionItem::Header(
+            "─── [ SYSTEM TWEAKS ] ──────────────────".into(),
+        ));
         items.push(ActionItem::WifiPowerSave);
         items.push(ActionItem::AudioPowerSave);
         items.push(ActionItem::Autosuspend);
@@ -152,7 +156,11 @@ impl App {
 
     pub fn prev_menu(&mut self) {
         let len = self.items.len();
-        let mut prev = if self.selected == 0 { len - 1 } else { self.selected - 1 };
+        let mut prev = if self.selected == 0 {
+            len - 1
+        } else {
+            self.selected - 1
+        };
         while self.items[prev].is_header() {
             prev = if prev == 0 { len - 1 } else { prev - 1 };
         }
@@ -256,7 +264,10 @@ impl App {
             ActionItem::KbdBacklight => {
                 if let Ok(cur) = self.backend.peripherals.kbd_backlight() {
                     let _ = self.backend.peripherals.set_kbd_backlight(!cur);
-                    self.set_toast(format!("KEYBOARD LIGHT: {}", if !cur { "ON" } else { "OFF" }));
+                    self.set_toast(format!(
+                        "KEYBOARD LIGHT: {}",
+                        if !cur { "ON" } else { "OFF" }
+                    ));
                 }
             }
             ActionItem::Bluetooth => {
@@ -274,25 +285,37 @@ impl App {
             ActionItem::WifiPowerSave => {
                 if let Ok(cur) = self.backend.tweaks.wifi_power_save() {
                     let _ = self.backend.tweaks.set_wifi_power_save(!cur);
-                    self.set_toast(format!("WIFI POWER SAVE: {}", if !cur { "ON" } else { "OFF" }));
+                    self.set_toast(format!(
+                        "WIFI POWER SAVE: {}",
+                        if !cur { "ON" } else { "OFF" }
+                    ));
                 }
             }
             ActionItem::AudioPowerSave => {
                 if let Ok(cur) = self.backend.tweaks.audio_power_save() {
                     let _ = self.backend.tweaks.set_audio_power_save(!cur);
-                    self.set_toast(format!("AUDIO POWER SAVE: {}", if !cur { "ON" } else { "OFF" }));
+                    self.set_toast(format!(
+                        "AUDIO POWER SAVE: {}",
+                        if !cur { "ON" } else { "OFF" }
+                    ));
                 }
             }
             ActionItem::Autosuspend => {
                 if let Ok(cur) = self.backend.tweaks.autosuspend() {
                     let _ = self.backend.tweaks.set_autosuspend(!cur);
-                    self.set_toast(format!("AUTOSUSPEND PCI/USB: {}", if !cur { "ON" } else { "OFF" }));
+                    self.set_toast(format!(
+                        "AUTOSUSPEND PCI/USB: {}",
+                        if !cur { "ON" } else { "OFF" }
+                    ));
                 }
             }
             ActionItem::Watchdog => {
                 if let Ok(cur) = self.backend.tweaks.nmi_watchdog() {
                     let _ = self.backend.tweaks.set_nmi_watchdog(!cur);
-                    self.set_toast(format!("WATCHDOG KERNEL: {}", if !cur { "ON" } else { "OFF" }));
+                    self.set_toast(format!(
+                        "WATCHDOG KERNEL: {}",
+                        if !cur { "ON" } else { "OFF" }
+                    ));
                 }
             }
             ActionItem::ProcessPurge => {
@@ -313,7 +336,11 @@ impl App {
                 if let Ok(cur) = self.backend.cpu.online_cores() {
                     let next = cur.saturating_sub(1).max(1);
                     let _ = self.backend.cpu.set_online_cores(next);
-                    self.set_toast(format!("ACTIVE CORES: {} / {}", next, self.backend.cpu.num_cpus()));
+                    self.set_toast(format!(
+                        "ACTIVE CORES: {} / {}",
+                        next,
+                        self.backend.cpu.num_cpus()
+                    ));
                 }
             }
             ActionItem::FreqLimit => {
@@ -407,7 +434,11 @@ impl App {
                 if let Ok(cur) = self.backend.cpu.online_cores() {
                     let next = (cur + 1).min(self.backend.cpu.num_cpus());
                     let _ = self.backend.cpu.set_online_cores(next);
-                    self.set_toast(format!("ACTIVE CORES: {} / {}", next, self.backend.cpu.num_cpus()));
+                    self.set_toast(format!(
+                        "ACTIVE CORES: {} / {}",
+                        next,
+                        self.backend.cpu.num_cpus()
+                    ));
                 }
             }
             ActionItem::FreqLimit => {
@@ -489,5 +520,20 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_action_item_is_header() {
+        assert!(ActionItem::Header("TEST".into()).is_header());
+        assert!(!ActionItem::ProfilePerformance.is_header());
+        assert!(!ActionItem::ProfileExtreme.is_header());
+        assert!(!ActionItem::AutoBrightness.is_header());
+        assert!(!ActionItem::Cores.is_header());
+        assert!(!ActionItem::Brightness.is_header());
     }
 }

@@ -5,7 +5,9 @@ use privilege::{is_root, require_root};
 use std::process::Command;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use wattwarden_core::*;
-use wattwarden_daemon::{install_systemd_service, uninstall_systemd_service, DaemonRunner, PidManager};
+use wattwarden_daemon::{
+    install_systemd_service, uninstall_systemd_service, DaemonRunner, PidManager,
+};
 use wattwarden_platform_linux::LinuxBackend;
 use wattwarden_tui::{run_tui, App};
 
@@ -92,12 +94,10 @@ fn sync_installed_binary() {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    sync_installed_binary();
-
-    // Normalize legacy Go flags to clap subcommands
-    let raw_args: Vec<String> = std::env::args().collect();
+pub fn normalize_args(raw_args: &[String]) -> Vec<String> {
+    if raw_args.is_empty() {
+        return vec![];
+    }
     let mut normalized = vec![raw_args[0].clone()];
     let mut i = 1;
     while i < raw_args.len() {
@@ -119,7 +119,15 @@ async fn main() -> anyhow::Result<()> {
         }
         i += 1;
     }
+    normalized
+}
 
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    sync_installed_binary();
+
+    let raw_args: Vec<String> = std::env::args().collect();
+    let normalized = normalize_args(&raw_args);
     let cli = Cli::parse_from(normalized);
 
     // Default to TUI if no subcommand provided
@@ -159,17 +167,21 @@ async fn main() -> anyhow::Result<()> {
             }
             let pid_mgr = PidManager::new();
             if pid_mgr.is_running() {
-                println!("⚡ WattWarden daemon is already running (PID: {}).", pid_mgr.read_pid().unwrap_or(0));
+                println!(
+                    "⚡ WattWarden daemon is already running (PID: {}).",
+                    pid_mgr.read_pid().unwrap_or(0)
+                );
                 return Ok(());
             }
 
             // Spawn background process
             let current_exe = std::env::current_exe()?;
-            let child = Command::new(current_exe)
-                .arg("daemon")
-                .spawn()?;
+            let child = Command::new(current_exe).arg("daemon").spawn()?;
 
-            println!("⚡ WattWarden background daemon started with PID {}.", child.id());
+            println!(
+                "⚡ WattWarden background daemon started with PID {}.",
+                child.id()
+            );
         }
 
         Commands::Stop => {
@@ -179,7 +191,10 @@ async fn main() -> anyhow::Result<()> {
             }
             let pid_mgr = PidManager::new();
             if let Some(pid) = pid_mgr.read_pid() {
-                let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGTERM);
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
                 pid_mgr.release();
                 println!("🛑 WattWarden daemon (PID {}) stopped.", pid);
             } else {
@@ -195,18 +210,36 @@ async fn main() -> anyhow::Result<()> {
 
             println!("⚡ WattWarden System Status");
             println!("──────────────────────────────────────────");
-            println!("Daemon Status     : {}", if is_active { "[ACTIVE] (Running in background)" } else { "[INACTIVE]" });
+            println!(
+                "Daemon Status     : {}",
+                if is_active {
+                    "[ACTIVE] (Running in background)"
+                } else {
+                    "[INACTIVE]"
+                }
+            );
             if let Some(pid) = pid_mgr.read_pid() {
                 println!("Daemon PID        : {}", pid);
             }
             println!("Active Profile    : {}", config.profile);
-            println!("Auto-Brightness   : {}", if config.auto_brightness { "Enabled" } else { "Disabled" });
+            println!(
+                "Auto-Brightness   : {}",
+                if config.auto_brightness {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                }
+            );
 
             if let Some(b) = backend {
                 if let Ok(pct) = b.battery.battery_percentage() {
                     let is_ac = b.battery.is_charging().unwrap_or(false);
                     let watts = b.battery.consumption_watts().unwrap_or(0.0);
-                    println!("Battery Capacity  : {}% ({})", pct, if is_ac { "AC Connected" } else { "On Battery" });
+                    println!(
+                        "Battery Capacity  : {}% ({})",
+                        pct,
+                        if is_ac { "AC Connected" } else { "On Battery" }
+                    );
                     println!("Discharge Rate    : {:.2} Watts", watts);
                 }
                 if b.threshold.supports_threshold() {
@@ -250,7 +283,10 @@ async fn main() -> anyhow::Result<()> {
             cfg.battery_charge_limit = Some(percent);
             cfg.save(None)?;
 
-            println!("✅ Battery charge ceiling set to {}%. Charging will stop at this threshold.", percent);
+            println!(
+                "✅ Battery charge ceiling set to {}%. Charging will stop at this threshold.",
+                percent
+            );
         }
 
         Commands::Brightness { value } => {
@@ -273,7 +309,9 @@ async fn main() -> anyhow::Result<()> {
                     println!("🛑 Dynamic auto-brightness disabled.");
                 }
                 digits => {
-                    let pct: u8 = digits.parse().map_err(|_| anyhow::anyhow!("Invalid brightness percentage: {}", digits))?;
+                    let pct: u8 = digits.parse().map_err(|_| {
+                        anyhow::anyhow!("Invalid brightness percentage: {}", digits)
+                    })?;
                     if let Some(bl) = &backend.backlight {
                         bl.set_brightness_percent(pct)?;
                         println!("Display brightness set to {}%.", pct);
@@ -304,4 +342,81 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_args() {
+        let args = vec![
+            "wattwarden".into(),
+            "--status".into(),
+            "--daemon".into(),
+            "--install-service".into(),
+        ];
+        let normalized = normalize_args(&args);
+        assert_eq!(
+            normalized,
+            vec!["wattwarden", "status", "daemon", "service", "install"]
+        );
+
+        let uninst = vec!["wattwarden".into(), "--uninstall-service".into()];
+        assert_eq!(
+            normalize_args(&uninst),
+            vec!["wattwarden", "service", "uninstall"]
+        );
+    }
+
+    #[test]
+    fn test_cli_parsing_subcommands() {
+        // TUI default
+        let cli = Cli::try_parse_from(["wattwarden"]).unwrap();
+        assert!(cli.command.is_none());
+
+        // Status
+        let cli = Cli::try_parse_from(["wattwarden", "status"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Status)));
+
+        // Profile
+        let cli = Cli::try_parse_from(["wattwarden", "profile", "extreme"]).unwrap();
+        if let Some(Commands::Profile { name }) = cli.command {
+            assert_eq!(name, "extreme");
+        } else {
+            panic!("Expected Commands::Profile");
+        }
+
+        // Threshold
+        let cli = Cli::try_parse_from(["wattwarden", "threshold", "80"]).unwrap();
+        if let Some(Commands::Threshold { percent }) = cli.command {
+            assert_eq!(percent, 80);
+        } else {
+            panic!("Expected Commands::Threshold");
+        }
+
+        // Brightness
+        let cli = Cli::try_parse_from(["wattwarden", "brightness", "off"]).unwrap();
+        if let Some(Commands::Brightness { value }) = cli.command {
+            assert_eq!(value, "off");
+        } else {
+            panic!("Expected Commands::Brightness");
+        }
+
+        // Service install
+        let cli = Cli::try_parse_from(["wattwarden", "service", "install"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Service {
+                action: ServiceAction::Install
+            })
+        ));
+
+        // Start & Stop
+        let cli = Cli::try_parse_from(["wattwarden", "start"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Start)));
+
+        let cli = Cli::try_parse_from(["wattwarden", "stop"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Stop)));
+    }
 }

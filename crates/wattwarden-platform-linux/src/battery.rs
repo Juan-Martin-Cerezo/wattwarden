@@ -19,6 +19,13 @@ impl LinuxBattery {
         })
     }
 
+    pub fn from_paths(battery_path: PathBuf, ac_path: Option<PathBuf>) -> Self {
+        Self {
+            battery_path,
+            ac_path,
+        }
+    }
+
     fn find_battery_path() -> Result<PathBuf> {
         let base = Path::new("/sys/class/power_supply");
         for candidate in &["BAT0", "BAT1", "BAT2", "BATT"] {
@@ -83,16 +90,15 @@ impl LinuxBattery {
 
 impl PowerSource for LinuxBattery {
     fn battery_percentage(&self) -> Result<u8> {
-        let cap = read_sysfs_u64(self.battery_path.join("capacity"))
-            .or_else(|_| {
-                let uevent = self.parse_uevent();
-                uevent
-                    .get("POWER_SUPPLY_CAPACITY")
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .ok_or_else(|| {
-                        WattWardenError::InterfaceNotFound("POWER_SUPPLY_CAPACITY not found".into())
-                    })
-            })?;
+        let cap = read_sysfs_u64(self.battery_path.join("capacity")).or_else(|_| {
+            let uevent = self.parse_uevent();
+            uevent
+                .get("POWER_SUPPLY_CAPACITY")
+                .and_then(|v| v.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    WattWardenError::InterfaceNotFound("POWER_SUPPLY_CAPACITY not found".into())
+                })
+        })?;
         Ok(cap.min(100) as u8)
     }
 
@@ -103,11 +109,13 @@ impl PowerSource for LinuxBattery {
             }
         }
 
-        let status = read_sysfs_string(self.battery_path.join("status"))
-            .unwrap_or_else(|_| {
-                let uevent = self.parse_uevent();
-                uevent.get("POWER_SUPPLY_STATUS").cloned().unwrap_or_default()
-            });
+        let status = read_sysfs_string(self.battery_path.join("status")).unwrap_or_else(|_| {
+            let uevent = self.parse_uevent();
+            uevent
+                .get("POWER_SUPPLY_STATUS")
+                .cloned()
+                .unwrap_or_default()
+        });
 
         Ok(status.eq_ignore_ascii_case("charging") || status.eq_ignore_ascii_case("full"))
     }
@@ -165,15 +173,24 @@ impl PowerSource for LinuxBattery {
             c * v / 1_000_000
         } else {
             let uevent = self.parse_uevent();
-            if let Some(e) = uevent.get("POWER_SUPPLY_ENERGY_NOW").and_then(|s| s.parse::<u64>().ok()) {
+            if let Some(e) = uevent
+                .get("POWER_SUPPLY_ENERGY_NOW")
+                .and_then(|s| s.parse::<u64>().ok())
+            {
                 e
             } else if let (Some(c), Some(v)) = (
-                uevent.get("POWER_SUPPLY_CHARGE_NOW").and_then(|s| s.parse::<u64>().ok()),
-                uevent.get("POWER_SUPPLY_VOLTAGE_NOW").and_then(|s| s.parse::<u64>().ok()),
+                uevent
+                    .get("POWER_SUPPLY_CHARGE_NOW")
+                    .and_then(|s| s.parse::<u64>().ok()),
+                uevent
+                    .get("POWER_SUPPLY_VOLTAGE_NOW")
+                    .and_then(|s| s.parse::<u64>().ok()),
             ) {
                 c * v / 1_000_000
             } else {
-                return Err(WattWardenError::InterfaceNotFound("No energy metric available".into()));
+                return Err(WattWardenError::InterfaceNotFound(
+                    "No energy metric available".into(),
+                ));
             }
         };
 
@@ -183,5 +200,41 @@ impl PowerSource for LinuxBattery {
         let m = ((hours_total - (h as f64)) * 60.0).round() as u32;
 
         Ok(format!("{}h {:02}m", h, m))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mock_battery_telemetry() {
+        let tmp_dir = std::env::temp_dir().join(format!("ww_bat_test_{}", std::process::id()));
+        let bat_dir = tmp_dir.join("BAT0");
+        let ac_dir = tmp_dir.join("AC");
+        let _ = fs::create_dir_all(&bat_dir);
+        let _ = fs::create_dir_all(&ac_dir);
+
+        // Populate mock sysfs values
+        fs::write(bat_dir.join("capacity"), "75\n").unwrap();
+        fs::write(bat_dir.join("status"), "Discharging\n").unwrap();
+        fs::write(bat_dir.join("power_now"), "15000000\n").unwrap(); // 15W
+        fs::write(bat_dir.join("energy_now"), "45000000\n").unwrap(); // 45Wh
+        fs::write(ac_dir.join("online"), "0\n").unwrap();
+
+        let bat = LinuxBattery::from_paths(bat_dir.clone(), Some(ac_dir.clone()));
+
+        assert_eq!(bat.battery_percentage().unwrap(), 75);
+        assert!(!bat.is_charging().unwrap());
+        let watts = bat.consumption_watts().unwrap();
+        assert!((watts - 15.0).abs() < 0.01);
+        assert_eq!(bat.time_remaining().unwrap(), "3h 00m");
+
+        // Test AC connected
+        fs::write(ac_dir.join("online"), "1\n").unwrap();
+        assert!(bat.is_charging().unwrap());
+        assert_eq!(bat.time_remaining().unwrap(), "Charging (AC)");
+
+        let _ = fs::remove_dir_all(tmp_dir);
     }
 }
