@@ -23,6 +23,11 @@ If you are an AI agent modifying or reasoning about this codebase, you **must st
    - ❌ **Forbidden:** Assuming Hyprland is the only compositor in existence.
    - ✅ **Mandated:** Provide fallback probes (Sway, GNOME, KDE, X11, or Null compositor fallback).
 
+5. **NO Multi-Step Installation Ceremonies:**
+   - ❌ **Forbidden:** Introducing dependencies or configuration steps that break single-command deployment.
+   - ✅ **Mandated:** The application must remain installable, configurable, and deployable via exactly one self-contained command (`curl ... | sudo bash`, `sudo ./install.sh`, or `make install`).
+
+
 ---
 
 ## 📋 Required Code Patterns

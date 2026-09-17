@@ -5,9 +5,9 @@ WattWarden is engineered under a singular architectural mandate: **Universal Sil
 
 ---
 
-## 📜 The 5 Cardinal Axioms
+## 📜 The 6 Cardinal Axioms
 
-Every contributor—whether a human software engineer or an autonomous AI coding agent—must preserve these five non-negotiable axioms:
+Every contributor—whether a human software engineer or an autonomous AI coding agent—must preserve these six non-negotiable axioms:
 
 ### 1. Probe First, Bind Later (Dynamic Discovery)
 The system must never assume the existence of any sysfs node, driver attribute, device file, or IPC socket. Hardware components are discovered through non-destructive, prioritized discovery probes at runtime. If a vendor path does not exist, the probe returns `None` and allows lower-priority fallback probes to evaluate.
@@ -35,6 +35,12 @@ Every hardware controller interface (`CpuGovernor`, `GpuController`, `ChargeThre
 ### 5. Hotplug & Environment Agility
 Hardware topology is mutable at runtime. Display cables are detached, external power bricks are swapped for USB-PD chargers, eGPUs are connected, and background compositors may restart. WattWarden must handle runtime hardware transitions and socket disconnections gracefully through automatic reconnection and reactive event listeners.
 
+### 6. Zero-Friction Single-Command Deployment (Universal Installation Invariant)
+**WattWarden must be installable, configurable, and deployable with exactly ONE single command on any machine.**
+- No convoluted multi-step compilation pipelines, dependency hunts, or manual configuration ceremonies.
+- A user or autonomous agent must be able to invoke a single self-contained command (via `curl -fsSL https://.../install.sh | sudo bash`, `sudo ./install.sh`, or `make install`) that automatically probes the system, acquires or builds the optimized release binary, establishes proper path bindings, configures native background services (`systemd` / `launchd`), and immediately converges to a running, verified state.
+- The installation workflow itself must honour Silicon Polymorphism: probe for toolchains, fall back to pre-compiled multi-arch binaries, and adapt to available privilege levels gracefully.
+
 ---
 
 ## 🛡️ Maintainer & AI Agent Directives
@@ -42,5 +48,7 @@ Hardware topology is mutable at runtime. Display cables are detached, external p
 When modifying or expanding the WattWarden codebase:
 1. **Never use `?` on primary component discovery in startup routines.** Missing hardware is a normal operating condition, not an error.
 2. **Enforce compile-time typestate guarantees.** Illegal hardware transitions (e.g. entering Extreme mode from an invalid state) must be prevented by the type system.
-3. **Maintain 100% test pass rates and zero Clippy warnings.** Run `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` before every commit.
-4. **Always provide unit tests with simulated mock interfaces** so that tests remain deterministic on headless CI build nodes without physical hardware.
+3. **Preserve the single-command deployment invariant.** Any feature addition must not introduce manual post-install configuration steps.
+4. **Maintain 100% test pass rates and zero Clippy warnings.** Run `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` before every commit.
+5. **Always provide unit tests with simulated mock interfaces** so that tests remain deterministic on headless CI build nodes without physical hardware.
+

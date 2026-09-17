@@ -43,16 +43,20 @@ wattwarden/
 ├── Cargo.toml                      # Multi-crate workspace definition
 ├── crates/
 │   ├── wattwarden-core/            # Hardware traits, typestate patterns, and config schema
-│   ├── wattwarden-platform-linux/  # Direct sysfs, RAPL, Netlink, and Hyprland socket IPC
+│   ├── wattwarden-platform/        # Multi-OS hardware probing (Linux, macOS, Windows, Fallback)
 │   ├── wattwarden-daemon/          # Asynchronous Tokio event runner & systemd controller
 │   ├── wattwarden-tui/             # High-performance Ratatui terminal dashboard
 │   └── wattwarden-cli/             # Unified binary entry point (clap v4)
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                  # Continuous integration (fmt, clippy, tests)
-│       └── release.yml             # Multi-arch automated release binary builds
-├── install.sh                      # 1-command installer script
+│       ├── ci.yml                  # Multi-OS continuous integration matrix
+│       └── release.yml             # Multi-OS automated release binary packaging
+├── Makefile                        # Convenient make targets (make install)
+├── install.sh                      # Universal 1-command installer script
 ├── uninstall.sh                    # Clean uninstallation script
+├── PHILOSOPHY.md                   # The Doctrine of Silicon Polymorphism (6 Axioms)
+├── AGENTS.md                       # AI coding agent operational directives
+├── ARCHITECTURE.md                 # Technical specification and probe hierarchy
 ├── CONTRIBUTING.md                 # Contribution guidelines
 └── LICENSE                         # MIT License
 ```
@@ -61,24 +65,24 @@ wattwarden/
 
 ## 🚀 Installation
 
-### One-Line Automated Install
+In accordance with the **Single-Command Deployment Invariant (Axiom 6)**, WattWarden is deployable with exactly one command.
+
+### 1. Universal One-Line Automated Install (Any Machine)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
 ```
-*This downloads the latest pre-compiled binary for your architecture (`x86_64` or `aarch64`), places it into `/usr/local/bin`, and optionally configures the systemd background daemon.*
+*Autonomously detects host operating system (`linux`, `macos`, `windows`), fetches or compiles the optimized release binary, establishes `/usr/local/bin` bindings, configures native background daemon services, and verifies operational state.*
 
-### Build from Source
+### 2. From Cloned Repository (Single Command)
 ```bash
-# Clone repository
-git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
-cd wattwarden
-
-# Compile optimized release binary
-cargo build --release
-
-# Install locally
 sudo ./install.sh
 ```
+*Or:*
+```bash
+sudo make install
+```
+*(Automatically builds `--release` if not already compiled, installs the binary, and enables the systemd service in one go).*
+
 
 ---
 
