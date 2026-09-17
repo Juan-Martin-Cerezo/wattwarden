@@ -5,9 +5,10 @@
 [![CI](https://github.com/Juan-Martin-Cerezo/wattwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/Juan-Martin-Cerezo/wattwarden/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/Platform-Linux-blue.svg)](https://www.kernel.org/)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)](https://github.com/Juan-Martin-Cerezo/wattwarden)
 
-**Next-Generation Hardware Power Governance & Telemetry Suite for Linux**
+**Universal Hardware Power Governance & Telemetry Suite**
+
 
 ```text
  ██╗    ██╗ █████╗ ████████╗████████╗██╗    ██╗ █████╗ ██████╗ ██████╗ ███████╗███╗   ██╗
@@ -51,10 +52,11 @@ wattwarden/
 │   └── workflows/
 │       ├── ci.yml                  # Multi-OS continuous integration matrix
 │       └── release.yml             # Multi-OS automated release binary packaging
-├── Makefile                        # Convenient make targets (make install)
-├── install.sh                      # Universal 1-command installer script
+├── Makefile                        # Build automation (make, make install)
+├── install.sh                      # Unix installer (Linux & macOS)
+├── install.ps1                     # Windows PowerShell installer
 ├── uninstall.sh                    # Clean uninstallation script
-├── PHILOSOPHY.md                   # The Doctrine of Silicon Polymorphism (6 Axioms)
+├── PHILOSOPHY.md                   # The Doctrine of Silicon Polymorphism
 ├── AGENTS.md                       # AI coding agent operational directives
 ├── ARCHITECTURE.md                 # Technical specification and probe hierarchy
 ├── CONTRIBUTING.md                 # Contribution guidelines
@@ -63,25 +65,95 @@ wattwarden/
 
 ---
 
-## 🚀 Installation
+## 🚀 How to Install
 
-In accordance with the **Single-Command Deployment Invariant (Axiom 6)**, WattWarden is deployable with exactly one command.
+WattWarden adapts to your operating system. Select your platform below for instructions:
 
-### 1. Universal One-Line Automated Install (Any Machine)
+### 🐧 Linux
+
+#### Automated Installer (Recommended)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
 ```
-*Autonomously detects host operating system (`linux`, `macos`, `windows`), fetches or compiles the optimized release binary, establishes `/usr/local/bin` bindings, configures native background daemon services, and verifies operational state.*
+*Detects your architecture (`x86_64` or `aarch64`), installs the binary to `/usr/local/bin`, and configures the systemd background daemon.*
 
-### 2. From Cloned Repository (Single Command)
+#### Using Cargo
 ```bash
-sudo ./install.sh
+cargo install --git https://github.com/Juan-Martin-Cerezo/wattwarden.git wattwarden-cli
+sudo $(which wattwarden) service install
 ```
-*Or:*
+
+#### From Source
 ```bash
+git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
+cd wattwarden
 sudo make install
 ```
-*(Automatically builds `--release` if not already compiled, installs the binary, and enables the systemd service in one go).*
+
+---
+
+### 🍏 macOS
+
+WattWarden on macOS natively interfaces with Apple battery metrics (`pmset`, `ioreg`), hardware core detection (`sysctl`), display brightness controls, and memory cache purging.
+
+#### Automated Installer
+```bash
+curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
+```
+
+#### Using Cargo
+```bash
+cargo install --git https://github.com/Juan-Martin-Cerezo/wattwarden.git wattwarden-cli
+```
+
+#### From Source
+```bash
+git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
+cd wattwarden
+cargo build --release
+sudo cp target/release/wattwarden /usr/local/bin/
+```
+
+---
+
+### 🪟 Windows
+
+On Windows, WattWarden queries Win32 CIM battery sensors, WMI monitor brightness controllers, and native ACPI energy profiles via `powercfg`.
+
+#### PowerShell Quick Install
+Open an elevated PowerShell prompt and run:
+```powershell
+irm https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.ps1 | iex
+```
+
+#### Pre-Compiled Executable
+Download the latest `wattwarden-windows-x86_64.exe` directly from the [GitHub Releases](https://github.com/Juan-Martin-Cerezo/wattwarden/releases) page and place it in your `PATH`.
+
+#### Using Cargo
+```powershell
+cargo install --git https://github.com/Juan-Martin-Cerezo/wattwarden.git wattwarden-cli
+```
+
+#### From Source
+```powershell
+git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
+cd wattwarden
+cargo build --release
+```
+
+---
+
+### 🐡 BSD & Other Unix Platforms
+
+For FreeBSD, OpenBSD, NetBSD, or Solaris, WattWarden compiles with an autonomous zero-panic fallback engine:
+
+```bash
+git clone https://github.com/Juan-Martin-Cerezo/wattwarden.git
+cd wattwarden
+cargo build --release
+sudo cp target/release/wattwarden /usr/local/bin/
+```
+
 
 
 ---
