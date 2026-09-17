@@ -13,6 +13,27 @@ pub trait PowerSource: Send + Sync {
 
     /// Formatted time remaining estimate (e.g. "4h 32m" or "Charging")
     fn time_remaining(&self) -> Result<String>;
+
+    /// Returns true if the system operates purely on AC mains power without a battery (e.g. Desktop PC, Server)
+    fn is_stationary(&self) -> bool {
+        false
+    }
+}
+
+/// Dynamic capabilities discovered at runtime on the host hardware
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HardwareCapabilities {
+    pub has_battery: bool,
+    pub is_stationary_mains: bool,
+    pub has_cpu_frequency_control: bool,
+    pub has_cpu_core_control: bool,
+    pub has_rapl: bool,
+    pub has_gpu_control: bool,
+    pub has_backlight_control: bool,
+    pub has_charge_threshold: bool,
+    pub has_peripherals_control: bool,
+    pub has_system_tweaks: bool,
+    pub has_compositor_focus: bool,
 }
 
 /// CPU cores, frequency limits, and energy governors

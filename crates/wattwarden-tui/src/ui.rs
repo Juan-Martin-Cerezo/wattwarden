@@ -54,24 +54,28 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     // 2. Centered Status Summary Line
-    let is_charging = app.backend.battery.is_charging().unwrap_or(false);
-    let batt_pct = app.backend.battery.battery_percentage().unwrap_or(0);
-    let watts = app.backend.battery.consumption_watts().unwrap_or(0.0);
-    let est = app
-        .backend
-        .battery
-        .time_remaining()
-        .unwrap_or_else(|_| "N/A".into());
-    let status_str = if is_charging {
-        "Charging"
+    let is_stationary = app.backend.battery.is_stationary();
+    let summary = if is_stationary {
+        "OS: Linux | Power: AC Mains (Stationary Workstation) | Battery: None".to_string()
     } else {
-        "Discharging"
+        let is_charging = app.backend.battery.is_charging().unwrap_or(false);
+        let batt_pct = app.backend.battery.battery_percentage().unwrap_or(0);
+        let watts = app.backend.battery.consumption_watts().unwrap_or(0.0);
+        let est = app
+            .backend
+            .battery
+            .time_remaining()
+            .unwrap_or_else(|_| "N/A".into());
+        let status_str = if is_charging {
+            "Charging"
+        } else {
+            "Discharging"
+        };
+        format!(
+            "OS: Linux | Battery: {}% ({}) | Est: {} | Power: {:.1}W",
+            batt_pct, status_str, est, watts
+        )
     };
-
-    let summary = format!(
-        "OS: Linux | Battery: {}% ({}) | Est: {} | Power: {:.1}W",
-        batt_pct, status_str, est, watts
-    );
     let info_y = art_y + ASCII_LOGO.len() + 1;
     let info_x = (w.saturating_sub(summary.len())) / 2;
     set_str(

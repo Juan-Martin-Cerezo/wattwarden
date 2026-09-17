@@ -57,12 +57,16 @@ impl App {
             ActionItem::ProfilePerformance,
             ActionItem::ProfileExtreme,
             ActionItem::ProfileAutoExtreme,
-            ActionItem::AutoBrightness,
-            ActionItem::ProfileRestore,
-            ActionItem::Header("─── [ HARDWARE LIMITS ] ────────────────".into()),
-            ActionItem::Cores,
-            ActionItem::FreqLimit,
         ];
+        if backend.backlight.is_some() {
+            items.push(ActionItem::AutoBrightness);
+        }
+        items.push(ActionItem::ProfileRestore);
+        items.push(ActionItem::Header(
+            "─── [ HARDWARE LIMITS ] ────────────────".into(),
+        ));
+        items.push(ActionItem::Cores);
+        items.push(ActionItem::FreqLimit);
 
         if backend.gpu.is_some() {
             items.push(ActionItem::GpuFreq);

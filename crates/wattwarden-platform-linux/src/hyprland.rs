@@ -94,3 +94,32 @@ impl CompositorFocus for HyprlandIpc {
         None
     }
 }
+
+impl HyprlandIpc {
+    pub fn with_socket(cmd_socket_path: Option<PathBuf>) -> Self {
+        Self { cmd_socket_path }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hypr_active_window_deserialization() {
+        let json = r#"{"class":"kitty","title":"alacritty terminal"}"#;
+        let win: HyprActiveWindow = serde_json::from_str(json).unwrap();
+        assert_eq!(win.class, "kitty");
+        assert_eq!(win.title, "alacritty terminal");
+
+        let empty_json = r#"{}"#;
+        let empty_win: HyprActiveWindow = serde_json::from_str(empty_json).unwrap();
+        assert!(empty_win.class.is_empty());
+    }
+
+    #[test]
+    fn test_compositor_none_fallback() {
+        let ipc = HyprlandIpc::with_socket(None);
+        assert_eq!(ipc.active_window_class(), None);
+    }
+}

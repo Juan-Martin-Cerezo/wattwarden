@@ -40,7 +40,7 @@ pub struct LinuxBackend {
 
 impl LinuxBackend {
     pub fn new() -> Result<Self> {
-        let battery = LinuxBattery::new()?;
+        let battery = LinuxBattery::new();
         let cpu = LinuxCpuGovernor::new();
         let rapl = LinuxRapl::new().ok();
         let gpu = LinuxGpu::new().ok();
@@ -63,6 +63,22 @@ impl LinuxBackend {
             tweaks,
             hyprland,
         })
+    }
+
+    pub fn capabilities(&self) -> HardwareCapabilities {
+        HardwareCapabilities {
+            has_battery: self.battery.has_battery(),
+            is_stationary_mains: self.battery.is_stationary(),
+            has_cpu_frequency_control: self.cpu.freq_bounds().is_ok(),
+            has_cpu_core_control: self.cpu.num_cpus() > 1,
+            has_rapl: self.rapl.is_some(),
+            has_gpu_control: self.gpu.is_some(),
+            has_backlight_control: self.backlight.is_some(),
+            has_charge_threshold: self.threshold.supports_threshold(),
+            has_peripherals_control: true,
+            has_system_tweaks: true,
+            has_compositor_focus: self.hyprland.active_window_class().is_some(),
+        }
     }
 
     pub fn apply_profile(&self, profile: &PowerProfile) -> Result<()> {

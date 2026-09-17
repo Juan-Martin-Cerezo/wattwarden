@@ -5,25 +5,29 @@ use std::path::{Path, PathBuf};
 use wattwarden_core::{PowerSource, Result, WattWardenError};
 
 pub struct LinuxBattery {
-    battery_path: PathBuf,
+    battery_path: Option<PathBuf>,
     ac_path: Option<PathBuf>,
 }
 
 impl LinuxBattery {
-    pub fn new() -> Result<Self> {
-        let battery_path = Self::find_battery_path()?;
+    pub fn new() -> Self {
+        let battery_path = Self::find_battery_path().ok();
         let ac_path = Self::find_ac_path();
-        Ok(Self {
-            battery_path,
-            ac_path,
-        })
-    }
-
-    pub fn from_paths(battery_path: PathBuf, ac_path: Option<PathBuf>) -> Self {
         Self {
             battery_path,
             ac_path,
         }
+    }
+
+    pub fn from_paths(battery_path: Option<PathBuf>, ac_path: Option<PathBuf>) -> Self {
+        Self {
+            battery_path,
+            ac_path,
+        }
+    }
+
+    pub fn has_battery(&self) -> bool {
+        self.battery_path.is_some()
     }
 
     fn find_battery_path() -> Result<PathBuf> {
@@ -76,11 +80,13 @@ impl LinuxBattery {
 
     fn parse_uevent(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
-        let uevent_path = self.battery_path.join("uevent");
-        if let Ok(content) = fs::read_to_string(uevent_path) {
-            for line in content.lines() {
-                if let Some((k, v)) = line.split_once('=') {
-                    map.insert(k.trim().to_string(), v.trim().to_string());
+        if let Some(p) = &self.battery_path {
+            let uevent_path = p.join("uevent");
+            if let Ok(content) = fs::read_to_string(uevent_path) {
+                for line in content.lines() {
+                    if let Some((k, v)) = line.split_once('=') {
+                        map.insert(k.trim().to_string(), v.trim().to_string());
+                    }
                 }
             }
         }
@@ -88,9 +94,18 @@ impl LinuxBattery {
     }
 }
 
+impl Default for LinuxBattery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PowerSource for LinuxBattery {
     fn battery_percentage(&self) -> Result<u8> {
-        let cap = read_sysfs_u64(self.battery_path.join("capacity")).or_else(|_| {
+        let Some(p) = &self.battery_path else {
+            return Ok(100);
+        };
+        let cap = read_sysfs_u64(p.join("capacity")).or_else(|_| {
             let uevent = self.parse_uevent();
             uevent
                 .get("POWER_SUPPLY_CAPACITY")
@@ -103,13 +118,17 @@ impl PowerSource for LinuxBattery {
     }
 
     fn is_charging(&self) -> Result<bool> {
+        let Some(p) = &self.battery_path else {
+            // Stationary machines with no battery are permanently running on AC mains
+            return Ok(true);
+        };
         if let Some(ac) = &self.ac_path {
             if let Ok(online) = read_sysfs_u64(ac.join("online")) {
                 return Ok(online == 1);
             }
         }
 
-        let status = read_sysfs_string(self.battery_path.join("status")).unwrap_or_else(|_| {
+        let status = read_sysfs_string(p.join("status")).unwrap_or_else(|_| {
             let uevent = self.parse_uevent();
             uevent
                 .get("POWER_SUPPLY_STATUS")
@@ -121,14 +140,17 @@ impl PowerSource for LinuxBattery {
     }
 
     fn consumption_watts(&self) -> Result<f64> {
+        let Some(p) = &self.battery_path else {
+            return Ok(0.0);
+        };
         // 1. Try direct power_now in microwatts
-        if let Ok(power_uw) = read_sysfs_i64(self.battery_path.join("power_now")) {
+        if let Ok(power_uw) = read_sysfs_i64(p.join("power_now")) {
             return Ok((power_uw.abs() as f64) / 1_000_000.0);
         }
 
         // 2. Fallback: current_now (microamperes) * voltage_now (microvolts)
-        let cur = read_sysfs_i64(self.battery_path.join("current_now")).ok();
-        let volt = read_sysfs_i64(self.battery_path.join("voltage_now")).ok();
+        let cur = read_sysfs_i64(p.join("current_now")).ok();
+        let volt = read_sysfs_i64(p.join("voltage_now")).ok();
         if let (Some(c), Some(v)) = (cur, volt) {
             let watts = (c.abs() as f64) * (v.abs() as f64) / 1_000_000_000_000.0;
             return Ok(watts);
@@ -154,6 +176,9 @@ impl PowerSource for LinuxBattery {
     }
 
     fn time_remaining(&self) -> Result<String> {
+        let Some(p) = &self.battery_path else {
+            return Ok("AC Mains (Stationary)".into());
+        };
         if self.is_charging()? {
             return Ok("Charging (AC)".into());
         }
@@ -164,11 +189,11 @@ impl PowerSource for LinuxBattery {
         }
 
         // Try reading energy_now (micro-watt-hours)
-        let energy_uwh: u64 = if let Ok(e) = read_sysfs_u64(self.battery_path.join("energy_now")) {
+        let energy_uwh: u64 = if let Ok(e) = read_sysfs_u64(p.join("energy_now")) {
             e
         } else if let (Ok(c), Ok(v)) = (
-            read_sysfs_u64(self.battery_path.join("charge_now")),
-            read_sysfs_u64(self.battery_path.join("voltage_now")),
+            read_sysfs_u64(p.join("charge_now")),
+            read_sysfs_u64(p.join("voltage_now")),
         ) {
             c * v / 1_000_000
         } else {
@@ -201,11 +226,26 @@ impl PowerSource for LinuxBattery {
 
         Ok(format!("{}h {:02}m", h, m))
     }
+
+    fn is_stationary(&self) -> bool {
+        self.battery_path.is_none()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_mock_stationary_desktop() {
+        let bat = LinuxBattery::from_paths(None, None);
+        assert!(!bat.has_battery());
+        assert!(bat.is_stationary());
+        assert_eq!(bat.battery_percentage().unwrap(), 100);
+        assert!(bat.is_charging().unwrap());
+        assert_eq!(bat.consumption_watts().unwrap(), 0.0);
+        assert_eq!(bat.time_remaining().unwrap(), "AC Mains (Stationary)");
+    }
 
     #[test]
     fn test_mock_battery_telemetry() {
@@ -222,8 +262,10 @@ mod tests {
         fs::write(bat_dir.join("energy_now"), "45000000\n").unwrap(); // 45Wh
         fs::write(ac_dir.join("online"), "0\n").unwrap();
 
-        let bat = LinuxBattery::from_paths(bat_dir.clone(), Some(ac_dir.clone()));
+        let bat = LinuxBattery::from_paths(Some(bat_dir.clone()), Some(ac_dir.clone()));
 
+        assert!(bat.has_battery());
+        assert!(!bat.is_stationary());
         assert_eq!(bat.battery_percentage().unwrap(), 75);
         assert!(!bat.is_charging().unwrap());
         let watts = bat.consumption_watts().unwrap();

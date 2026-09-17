@@ -232,20 +232,32 @@ async fn main() -> anyhow::Result<()> {
             );
 
             if let Some(b) = backend {
-                if let Ok(pct) = b.battery.battery_percentage() {
-                    let is_ac = b.battery.is_charging().unwrap_or(false);
-                    let watts = b.battery.consumption_watts().unwrap_or(0.0);
-                    println!(
-                        "Battery Capacity  : {}% ({})",
-                        pct,
-                        if is_ac { "AC Connected" } else { "On Battery" }
-                    );
-                    println!("Discharge Rate    : {:.2} Watts", watts);
-                }
-                if b.threshold.supports_threshold() {
-                    if let Ok(limit) = b.threshold.charge_threshold() {
-                        println!("BMS Charge Ceiling: {}%", limit);
+                let caps = b.capabilities();
+                let chassis = if caps.has_battery {
+                    "Laptop / Portable"
+                } else {
+                    "Desktop / Stationary Workstation"
+                };
+                println!("Chassis Type      : {}", chassis);
+
+                if caps.has_battery {
+                    if let Ok(pct) = b.battery.battery_percentage() {
+                        let is_ac = b.battery.is_charging().unwrap_or(false);
+                        let watts = b.battery.consumption_watts().unwrap_or(0.0);
+                        println!(
+                            "Battery Capacity  : {}% ({})",
+                            pct,
+                            if is_ac { "AC Connected" } else { "On Battery" }
+                        );
+                        println!("Discharge Rate    : {:.2} Watts", watts);
                     }
+                    if b.threshold.supports_threshold() {
+                        if let Ok(limit) = b.threshold.charge_threshold() {
+                            println!("BMS Charge Ceiling: {}%", limit);
+                        }
+                    }
+                } else {
+                    println!("Power Source      : AC Mains (Stationary)");
                 }
             }
         }
