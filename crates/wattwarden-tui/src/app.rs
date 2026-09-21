@@ -8,6 +8,7 @@ pub enum ActionItem {
     ProfilePerformance,
     ProfileExtreme,
     ProfileAutoExtreme,
+    AutoExtremeLevel,
     AutoBrightness,
     ProfileRestore,
     Cores,
@@ -57,6 +58,7 @@ impl App {
             ActionItem::ProfilePerformance,
             ActionItem::ProfileExtreme,
             ActionItem::ProfileAutoExtreme,
+            ActionItem::AutoExtremeLevel,
         ];
         if backend.backlight.is_some() {
             items.push(ActionItem::AutoBrightness);
@@ -221,6 +223,15 @@ impl App {
                     let _ = self.config.save(None);
                     self.set_toast("AUTO EXTREME RUNNING (BACKGROUND)");
                 }
+            }
+            ActionItem::AutoExtremeLevel => {
+                let next = self.config.auto_extreme_level.next();
+                self.config.auto_extreme_level = next;
+                let _ = self.config.save(None);
+                self.set_toast(format!(
+                    "AUTO EXTREME LEVEL: {}",
+                    next.to_string().to_uppercase()
+                ));
             }
             ActionItem::AutoBrightness => {
                 self.config.auto_brightness = !self.config.auto_brightness;

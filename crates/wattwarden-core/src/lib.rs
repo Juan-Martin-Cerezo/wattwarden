@@ -3,7 +3,7 @@ pub mod error;
 pub mod traits;
 pub mod typestate;
 
-pub use config::{Config, PowerProfile};
+pub use config::{AutoExtremeLevel, Config, LevelParams, PowerProfile};
 pub use error::{Result, WattWardenError};
 pub use traits::*;
 pub use typestate::{DeviceGovernor, Extreme, Normal, Performance};

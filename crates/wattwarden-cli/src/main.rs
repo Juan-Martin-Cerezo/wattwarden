@@ -47,6 +47,12 @@ enum Commands {
         name: String,
     },
 
+    /// Set the Auto Extreme adaptive level (low, medium, high)
+    Level {
+        /// Target level name
+        name: String,
+    },
+
     /// Set battery BMS charge threshold ceiling (e.g. 80%)
     Threshold {
         /// Charge percentage ceiling [50-100]
@@ -230,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Daemon PID        : {}", pid);
             }
             println!("Active Profile    : {}", config.profile);
+            println!("Auto Extr. Level  : {}", config.auto_extreme_level);
             println!(
                 "Auto-Brightness   : {}",
                 if config.auto_brightness {
@@ -285,6 +292,20 @@ async fn main() -> anyhow::Result<()> {
             cfg.save(None)?;
 
             println!("✅ Power profile updated and persisted to: {}", profile);
+        }
+
+        Commands::Level { name } => {
+            if let Err(e) = require_root() {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+            let level: AutoExtremeLevel = name.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            let mut cfg = Config::load_or_default(None);
+            cfg.auto_extreme_level = level;
+            cfg.save(None)?;
+
+            println!("✅ Auto Extreme level updated and persisted to: {}", level);
         }
 
         Commands::Threshold { percent } => {
@@ -405,6 +426,14 @@ mod tests {
             assert_eq!(name, "extreme");
         } else {
             panic!("Expected Commands::Profile");
+        }
+
+        // Level
+        let cli = Cli::try_parse_from(["wattwarden", "level", "low"]).unwrap();
+        if let Some(Commands::Level { name }) = cli.command {
+            assert_eq!(name, "low");
+        } else {
+            panic!("Expected Commands::Level");
         }
 
         // Threshold

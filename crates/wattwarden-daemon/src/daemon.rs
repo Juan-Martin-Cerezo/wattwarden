@@ -71,7 +71,6 @@ impl DaemonRunner {
 
             // Spawn Hyprland socket2 async listener if available
             let backend_hypr = Arc::clone(&self.backend);
-            let config_hypr = self.config.clone();
             tokio::spawn(async move {
                 if let Some(socket_path) = HyprlandIpc::discover_event_socket() {
                     if let Ok(stream) = UnixStream::connect(socket_path).await {
@@ -79,7 +78,7 @@ impl DaemonRunner {
                         while let Ok(Some(line)) = reader.next_line().await {
                             if let Some(payload) = line.strip_prefix("activewindow>>") {
                                 let class = payload.split(',').next().unwrap_or("").to_lowercase();
-                                Self::handle_window_change(&backend_hypr, &config_hypr, &class);
+                                Self::handle_window_change(&backend_hypr, &class);
                             }
                         }
                     }
@@ -115,7 +114,8 @@ impl DaemonRunner {
     }
 
     #[cfg(target_os = "linux")]
-    fn handle_window_change(backend: &LinuxBackend, config: &Config, class: &str) {
+    fn handle_window_change(backend: &LinuxBackend, class: &str) {
+        let config = Config::load_or_default(None);
         if !config.auto_brightness {
             return;
         }
@@ -131,10 +131,23 @@ impl DaemonRunner {
             || class.contains("wezterm")
             || class.contains("tmux");
 
+        let is_heavy_ui = class.contains("firefox")
+            || class.contains("chrome")
+            || class.contains("chromium")
+            || class.contains("brave")
+            || class.contains("zen")
+            || class.contains("code")
+            || class.contains("cursor")
+            || class.contains("idea")
+            || class.contains("studio");
+
+        let params = config.auto_extreme_level.params();
         let target_pct = if is_terminal {
-            config.terminal_brightness
+            params.brightness_idle
+        } else if is_heavy_ui {
+            params.brightness_load
         } else {
-            config.gui_brightness
+            params.brightness_default
         };
 
         if let Some(bl) = &backend.backlight {
@@ -170,17 +183,28 @@ impl DaemonRunner {
             if let Ok(load_content) = std::fs::read_to_string("/proc/loadavg") {
                 let first = load_content.split_whitespace().next().unwrap_or("0.0");
                 let load: f64 = first.parse().unwrap_or(0.0);
-                let num_cpus = self.backend.cpu.num_cpus() as f64;
-                let normalized_load = (load / num_cpus).clamp(0.0, 1.0);
+                let ncpu = self.backend.cpu.num_cpus();
+                let normalized_load = (load / ncpu as f64).clamp(0.0, 1.0);
 
-                if normalized_load < 0.3 {
-                    // Idle workload: aggressive throttling
+                // Re-read the adaptive level every tick so changes apply without a restart
+                let params = Config::load_or_default(None).auto_extreme_level.params();
+                let turbo_on = normalized_load >= params.turbo_from;
+
+                if normalized_load < params.idle_threshold {
+                    // Idle workload: aggressive floor
                     let (min_freq, _) = self.backend.cpu.freq_bounds().unwrap_or((400, 1600));
                     let _ = self.backend.cpu.set_freq_limit(min_freq);
+                    let idle_cores = if params.idle_cores == 0 {
+                        ncpu
+                    } else {
+                        params.idle_cores.min(ncpu)
+                    };
+                    let _ = self.backend.cpu.set_online_cores(idle_cores);
+                    let _ = self.backend.cpu.set_turbo_enabled(turbo_on);
                     let _ = self
                         .backend
                         .cpu
-                        .set_online_cores(2.min(self.backend.cpu.num_cpus()));
+                        .set_energy_performance_preference(params.epp_idle);
                     if let Some(gpu) = &self.backend.gpu {
                         let (min_g, _) = gpu.gpu_bounds().unwrap_or((300, 1100));
                         let _ = gpu.set_gpu_freq(min_g);
@@ -191,16 +215,18 @@ impl DaemonRunner {
                         let _ = rapl.set_pl2_watts(min_w);
                     }
                 } else {
-                    // Burst workload: scale up to maintain UI responsiveness
+                    // Burst workload: scale up across the full hardware range
                     let (min_freq, max_freq) =
                         self.backend.cpu.freq_bounds().unwrap_or((400, 3500));
                     let target_freq =
                         (min_freq as f64 + (max_freq - min_freq) as f64 * normalized_load) as u32;
                     let _ = self.backend.cpu.set_freq_limit(target_freq);
+                    let _ = self.backend.cpu.set_online_cores(ncpu);
+                    let _ = self.backend.cpu.set_turbo_enabled(turbo_on);
                     let _ = self
                         .backend
                         .cpu
-                        .set_online_cores(self.backend.cpu.num_cpus());
+                        .set_energy_performance_preference(params.epp_load);
                     if let Some(gpu) = &self.backend.gpu {
                         let (min_g, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
                         let target_g =

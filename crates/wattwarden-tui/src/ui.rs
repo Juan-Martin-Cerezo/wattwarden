@@ -350,6 +350,14 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
             },
             app.config.profile == PowerProfile::AutoExtreme,
         ),
+        ActionItem::AutoExtremeLevel => (
+            "Auto Extreme Level",
+            format!(
+                "[{}]",
+                app.config.auto_extreme_level.to_string().to_uppercase()
+            ),
+            false,
+        ),
         ActionItem::AutoBrightness => (
             "Auto Brightness",
             if app.config.auto_brightness {

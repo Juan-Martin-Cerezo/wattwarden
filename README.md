@@ -38,6 +38,20 @@ In an era where operating systems and software abstractions often obscure direct
 
 ---
 
+## 🎚️ Auto Extreme Levels
+
+**Auto Extreme** is an adaptive controller: on every tick it reads `/proc/loadavg`, normalises it by core count, and scales CPU frequency, active cores, GPU frequency and RAPL power limits to match. The level does **not** hardcode those values — it *parametrises the loop* (idle threshold, minimum idle cores, EPP, turbo gate and window brightness). The 100% hardware ceiling under load is never lowered at any level.
+
+| Level | Idle threshold | Idle cores | EPP (idle / load) | Turbo gate | Brightness (terminal / default / heavy UI) |
+|-------|----------------|------------|-------------------|------------|--------------------------------------------|
+| `high` *(default)* | 0.30 | 2 | power / power | ≥ 0.80 | 12 / 20 / 30 |
+| `medium` | 0.50 | max(2, ncpu/2) | power / power | ≥ 0.50 | 20 / 30 / 40 |
+| `low` | 0.70 | all | balance_power / balance_performance | always | 30 / 45 / 55 |
+
+`high` is the most aggressive (maximum battery life, lowest performance) and is the default; `medium` and `low` react sooner to load and leave more resources available. The daemon re-reads the level on every tick, so a change applies without restarting the service.
+
+---
+
 ## 🚀 Installation & Usage
 
 We provide pre-compiled, static binaries for all major operating systems and architectures.
@@ -98,6 +112,7 @@ wattwarden status                   # Check daemon running status, battery drain
 sudo wattwarden start               # Start background daemon/service
 sudo wattwarden stop                # Stop background daemon/service
 sudo wattwarden profile <name>      # Apply profile (normal, performance, extreme, auto)
+sudo wattwarden level <low|medium|high> # Set Auto Extreme adaptive level
 sudo wattwarden threshold <pct>     # Set battery charge limit percentage (e.g. 80%)
 sudo wattwarden brightness <val>    # Set display brightness (1-100) or toggle auto (on/off)
 sudo wattwarden service install     # Install & enable auto-start system service
