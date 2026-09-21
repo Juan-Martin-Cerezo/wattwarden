@@ -88,9 +88,10 @@ pub struct LevelParams {
     pub epp_idle: &'static str,
     pub epp_load: &'static str,
     pub turbo_from: f64,
-    pub brightness_idle: u8,
-    pub brightness_load: u8,
-    pub brightness_default: u8,
+    /// `false` = no escribir turbo/EPP en el lazo adaptativo (comportamiento historico = High).
+    pub manage_power_hints: bool,
+    /// Delta (en puntos de brillo) aplicado sobre `terminal_brightness`/`gui_brightness` del config.
+    pub brightness_delta: i16,
 }
 
 impl AutoExtremeLevel {
@@ -105,9 +106,8 @@ impl AutoExtremeLevel {
                 epp_idle: "power",
                 epp_load: "power",
                 turbo_from: 0.8,
-                brightness_idle: 12,
-                brightness_load: 30,
-                brightness_default: 20,
+                manage_power_hints: false,
+                brightness_delta: 0,
             },
             Self::Medium => LevelParams {
                 idle_threshold: 0.5,
@@ -115,9 +115,8 @@ impl AutoExtremeLevel {
                 epp_idle: "power",
                 epp_load: "power",
                 turbo_from: 0.5,
-                brightness_idle: 20,
-                brightness_load: 40,
-                brightness_default: 30,
+                manage_power_hints: true,
+                brightness_delta: 10,
             },
             Self::Low => LevelParams {
                 idle_threshold: 0.7,
@@ -125,9 +124,8 @@ impl AutoExtremeLevel {
                 epp_idle: "balance_power",
                 epp_load: "balance_performance",
                 turbo_from: 0.0,
-                brightness_idle: 30,
-                brightness_load: 55,
-                brightness_default: 45,
+                manage_power_hints: true,
+                brightness_delta: 20,
             },
         }
     }
@@ -300,6 +298,24 @@ mod tests {
         assert_eq!(high.epp_idle, "power");
         assert_eq!(low.epp_idle, "balance_power");
         assert_eq!(low.epp_load, "balance_performance");
+    }
+
+    /// High tiene que ser el comportamiento historico: el lazo NO toca turbo/EPP
+    /// y el brillo sale del config del usuario sin correccion.
+    #[test]
+    fn test_high_level_is_behavior_preserving() {
+        let high = AutoExtremeLevel::High.params();
+        assert!(!high.manage_power_hints);
+        assert_eq!(high.brightness_delta, 0);
+        assert_eq!(high.idle_threshold, 0.3);
+        assert_eq!(high.idle_cores, 2);
+
+        assert!(AutoExtremeLevel::Medium.params().manage_power_hints);
+        assert!(AutoExtremeLevel::Low.params().manage_power_hints);
+        assert!(
+            AutoExtremeLevel::Medium.params().brightness_delta
+                > AutoExtremeLevel::High.params().brightness_delta
+        );
     }
 
     #[test]

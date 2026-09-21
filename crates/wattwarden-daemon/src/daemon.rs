@@ -131,24 +131,13 @@ impl DaemonRunner {
             || class.contains("wezterm")
             || class.contains("tmux");
 
-        let is_heavy_ui = class.contains("firefox")
-            || class.contains("chrome")
-            || class.contains("chromium")
-            || class.contains("brave")
-            || class.contains("zen")
-            || class.contains("code")
-            || class.contains("cursor")
-            || class.contains("idea")
-            || class.contains("studio");
-
         let params = config.auto_extreme_level.params();
-        let target_pct = if is_terminal {
-            params.brightness_idle
-        } else if is_heavy_ui {
-            params.brightness_load
+        let base_pct = if is_terminal {
+            config.terminal_brightness
         } else {
-            params.brightness_default
+            config.gui_brightness
         };
+        let target_pct = (base_pct as i16 + params.brightness_delta).clamp(0, 100) as u8;
 
         if let Some(bl) = &backend.backlight {
             let _ = bl.set_brightness_percent(target_pct);
@@ -188,7 +177,6 @@ impl DaemonRunner {
 
                 // Re-read the adaptive level every tick so changes apply without a restart
                 let params = Config::load_or_default(None).auto_extreme_level.params();
-                let turbo_on = normalized_load >= params.turbo_from;
 
                 if normalized_load < params.idle_threshold {
                     // Idle workload: aggressive floor
@@ -200,11 +188,14 @@ impl DaemonRunner {
                         params.idle_cores.min(ncpu)
                     };
                     let _ = self.backend.cpu.set_online_cores(idle_cores);
-                    let _ = self.backend.cpu.set_turbo_enabled(turbo_on);
-                    let _ = self
-                        .backend
-                        .cpu
-                        .set_energy_performance_preference(params.epp_idle);
+                    if params.manage_power_hints {
+                        let turbo_on = normalized_load >= params.turbo_from;
+                        let _ = self.backend.cpu.set_turbo_enabled(turbo_on);
+                        let _ = self
+                            .backend
+                            .cpu
+                            .set_energy_performance_preference(params.epp_idle);
+                    }
                     if let Some(gpu) = &self.backend.gpu {
                         let (min_g, _) = gpu.gpu_bounds().unwrap_or((300, 1100));
                         let _ = gpu.set_gpu_freq(min_g);
@@ -222,11 +213,14 @@ impl DaemonRunner {
                         (min_freq as f64 + (max_freq - min_freq) as f64 * normalized_load) as u32;
                     let _ = self.backend.cpu.set_freq_limit(target_freq);
                     let _ = self.backend.cpu.set_online_cores(ncpu);
-                    let _ = self.backend.cpu.set_turbo_enabled(turbo_on);
-                    let _ = self
-                        .backend
-                        .cpu
-                        .set_energy_performance_preference(params.epp_load);
+                    if params.manage_power_hints {
+                        let turbo_on = normalized_load >= params.turbo_from;
+                        let _ = self.backend.cpu.set_turbo_enabled(turbo_on);
+                        let _ = self
+                            .backend
+                            .cpu
+                            .set_energy_performance_preference(params.epp_load);
+                    }
                     if let Some(gpu) = &self.backend.gpu {
                         let (min_g, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
                         let target_g =
