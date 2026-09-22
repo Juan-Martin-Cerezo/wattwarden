@@ -296,6 +296,31 @@ mod tests {
         assert!(!bat.is_charging().unwrap());
     }
 
+    /// A desktop, rack server or container exposes `/sys/class/power_supply` with no
+    /// battery in it: the source degrades to Stationary AC Mains, reports 0 %, and
+    /// never creates a `BAT0` node just because it looked for one.
+    #[test]
+    fn empty_power_supply_class_is_stationary_and_creates_nothing() {
+        let dir = std::env::temp_dir().join(format!("ww_bat_empty_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(POWER_SUPPLY_BASE)).unwrap();
+        let root = SysfsRoot::new(&dir);
+
+        let bat = LinuxBattery::with_root(root.clone());
+        assert!(!bat.has_battery());
+        assert!(bat.is_stationary());
+        assert_eq!(bat.battery_percentage().unwrap(), 0);
+        assert!(!bat.is_charging().unwrap());
+        assert_eq!(bat.time_remaining().unwrap(), "Calculating...");
+        assert_eq!(bat.consumption_watts().unwrap(), 0.0);
+        assert!(
+            !root.exists(&format!("{POWER_SUPPLY_BASE}/{DEFAULT_BATTERY}")),
+            "no battery node may be created on a machine without one"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn time_remaining_uses_charge_now_formula() {
         let root = root("chargeformula");

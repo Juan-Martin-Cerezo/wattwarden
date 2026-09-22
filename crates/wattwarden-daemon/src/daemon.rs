@@ -389,6 +389,27 @@ impl DaemonRunner {
 
         let config = self.config();
 
+        // One line, once per start: the discovered topology. Machines without RAPL
+        // (AMD/ARM), without a battery (desktop/server/container) or without a
+        // backlight are normal, and the per-tick setters stay silent about it
+        // (`debug!` under the daemon's `info` filter), so this is the only place the
+        // absences are reported.
+        let caps = self.backend.capabilities();
+        info!(
+            "Hardware capabilities: battery={} (stationary_mains={}), cpu_freq={}, \
+             cpu_cores={}, rapl={}, gpu={}, backlight={}, charge_threshold={}, \
+             compositor={}",
+            caps.has_battery,
+            caps.is_stationary_mains,
+            caps.has_cpu_frequency_control,
+            caps.has_cpu_core_control,
+            caps.has_rapl,
+            caps.has_gpu_control,
+            caps.has_backlight_control,
+            caps.has_charge_threshold,
+            caps.has_compositor_focus,
+        );
+
         // Opt-in puro: solo se escribe lo que el usuario habilitó explícitamente
         // (perfil y/o umbral de carga). Sin ajustes, no se toca nada.
         self.apply_boot_settings(&config);

@@ -1,9 +1,14 @@
-//! Intel/AMD integrated GPU frequency control via the DRM `gt_*` sysfs knobs.
+//! Integrated GPU frequency control via the DRM `gt_*` sysfs knobs.
 //!
-//! Faithful transcription of `hal/backend_linux.go`:
+//! Hardware-agnostic rewrite of the Go transcription:
 //!
-//! * `getGPUPath()` -> `/sys/class/drm/card1` when `gt_max_freq_mhz` exists there,
-//!   otherwise `/sys/class/drm/card0`, otherwise "no support".
+//! * `getGPUPath()` -> the first DRM card exposing a writable frequency node, in Go's
+//!   preference order (`card1`, then `card0`, then every other `cardN`), probed at the
+//!   card root (`cardN/gt_max_freq_mhz`, the Intel i915/xe layout) and under its
+//!   `device/` link. No frequency node on any card (ARM/v3d, AMD DPM-only, a server
+//!   with no GPU) means "no support": [`LinuxGpu::with_root`] returns
+//!   `InterfaceNotFound` and the backend runs without GPU control. Nothing is ever
+//!   written to a node that does not exist.
 //! * `GetGPUBounds()` -> no card means `(300, 1100)`; otherwise
 //!   min = `gt_RPn_freq_mhz` else `gt_min_freq_mhz`, max = `gt_RP0_freq_mhz` else
 //!   `gt_max_freq_mhz`, each falling back to `300`/`1100` on parse failure. This is
@@ -22,9 +27,19 @@ use wattwarden_core::{GpuController, Result, WattWardenError};
 /// Relative base of the DRM class directory.
 const DRM_BASE: &str = "sys/class/drm";
 
+/// Writable GPU frequency node probed on every DRM card (Intel i915/xe).
+const GT_MAX_FREQ: &str = "gt_max_freq_mhz";
+
 /// Go fallbacks for `GetGPUBounds`.
 pub const FALLBACK_MIN_MHZ: u32 = 300;
 pub const FALLBACK_MAX_MHZ: u32 = 1100;
+
+/// True for a DRM card directory (`card0`, `card1`, …) and false for its connector
+/// entries (`card1-HDMI-A-1`, `card1-Writeback-2`, `renderD128`, `version`).
+fn is_card_dir(name: &str) -> bool {
+    name.strip_prefix("card")
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
 
 #[derive(Debug, Clone)]
 pub struct LinuxGpu {
@@ -41,12 +56,19 @@ impl LinuxGpu {
 
     pub fn with_root(root: SysfsRoot) -> Result<Self> {
         let card = Self::discover(&root);
-        if card.is_none() {
+        let Some(card) = card else {
+            debug!(
+                "GPU: no DRM card exposes a {GT_MAX_FREQ} node under /{DRM_BASE}; \
+                 GPU controls disabled"
+            );
             return Err(WattWardenError::InterfaceNotFound(
                 "No controllable GPU frequency interface discovered in /sys/class/drm".into(),
             ));
-        }
-        Ok(Self { root, card })
+        };
+        Ok(Self {
+            root,
+            card: Some(card),
+        })
     }
 
     /// Compatibility constructor: point the controller at an explicit absolute card
@@ -58,13 +80,43 @@ impl LinuxGpu {
         }
     }
 
-    /// Go `getGPUPath()`: `card1` first, then `card0`, else nothing.
+    /// Discovers the directory of the first DRM card exposing a writable frequency
+    /// node, in Go's preference order (`card1`, then `card0`, then the remaining
+    /// `cardN` sorted).
+    ///
+    /// The node is probed at the card root (`cardN/gt_max_freq_mhz`, the Intel layout)
+    /// and under its `device/` link, so both kernel layouts are found. Cards carrying
+    /// no frequency node are skipped, and no card at all yields `None`.
     fn discover(root: &SysfsRoot) -> Option<PathBuf> {
-        ["card1", "card0"].iter().find_map(|card| {
+        Self::ordered_cards(root).into_iter().find_map(|card| {
             let rel = format!("{DRM_BASE}/{card}");
-            root.exists(&format!("{rel}/gt_max_freq_mhz"))
-                .then(|| root.path(&rel))
+            [rel.clone(), format!("{rel}/device")]
+                .into_iter()
+                .find(|base| root.exists(&format!("{base}/{GT_MAX_FREQ}")))
+                .map(|base| root.path(&base))
         })
+    }
+
+    /// DRM card directory names: Go's `card1`/`card0` first, then every other
+    /// `cardN` in sorted order. Connector entries are excluded.
+    fn ordered_cards(root: &SysfsRoot) -> Vec<String> {
+        let cards: Vec<String> = root
+            .names(DRM_BASE)
+            .into_iter()
+            .filter(|name| is_card_dir(name))
+            .collect();
+        let mut ordered: Vec<String> = Vec::new();
+        for preferred in ["card1", "card0"] {
+            if cards.iter().any(|c| c == preferred) {
+                ordered.push(preferred.to_string());
+            }
+        }
+        for card in cards {
+            if !ordered.contains(&card) {
+                ordered.push(card);
+            }
+        }
+        ordered
     }
 
     /// True when a card exposing `gt_max_freq_mhz` was found.
@@ -81,10 +133,22 @@ impl LinuxGpu {
         raw.parse::<u32>().ok()
     }
 
+    /// Best-effort write that only touches a node the kernel actually exposes. The
+    /// write set is `gt_min_freq_mhz` + `gt_max_freq_mhz`; a kernel exposing neither
+    /// (the discovery found the node elsewhere) must not have them created by a plain
+    /// `fs::write`.
     fn card_write(&self, leaf: &str, value: u32) {
-        if let Some(card) = self.card.as_ref() {
-            self.root
-                .write_best_effort_path(&card.join(leaf), &value.to_string());
+        let Some(card) = self.card.as_ref() else {
+            return;
+        };
+        let path = card.join(leaf);
+        if path.exists() {
+            self.root.write_best_effort_path(&path, &value.to_string());
+        } else {
+            debug!(
+                "GPU: {} is not exposed by the kernel; not writing it",
+                path.display()
+            );
         }
     }
 }
@@ -132,7 +196,7 @@ impl GpuController for LinuxGpu {
 
     fn gpu_freq(&self) -> Result<u32> {
         // Go: missing card or unparsable value both yield 0.
-        Ok(self.card_read("gt_max_freq_mhz").unwrap_or(0))
+        Ok(self.card_read(GT_MAX_FREQ).unwrap_or(0))
     }
 
     fn set_gpu_freq(&self, mhz: u32) -> Result<()> {
@@ -341,6 +405,99 @@ mod tests {
         assert_eq!(
             fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
             "1100"
+        );
+    }
+
+    /// The probe is not limited to `card0`/`card1`: any `cardN` is considered, so a
+    /// machine whose only GPU node lives on `card2` is still discovered.
+    #[test]
+    fn a_card_other_than_card0_or_card1_is_discovered() {
+        let dir = std::env::temp_dir().join(format!("ww_gpu_card2_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let card = dir.join(DRM_BASE).join("card2");
+        fs::create_dir_all(&card).unwrap();
+        fs::write(card.join("gt_RPn_freq_mhz"), "300\n").unwrap();
+        fs::write(card.join("gt_RP0_freq_mhz"), "1300\n").unwrap();
+        fs::write(card.join("gt_min_freq_mhz"), "300\n").unwrap();
+        fs::write(card.join("gt_max_freq_mhz"), "1300\n").unwrap();
+
+        let gpu = LinuxGpu::with_root(SysfsRoot::new(&dir)).unwrap();
+        assert_eq!(gpu.card.as_ref().unwrap().file_name().unwrap(), "card2");
+        assert_eq!(gpu.discovered_gpu_bounds(), Some((300, 1300)));
+        gpu.set_gpu_freq(99_999).unwrap();
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "1300"
+        );
+    }
+
+    /// The frequency node is also probed under the card's `device/` link, which is
+    /// where some kernels publish it instead of at the card root.
+    #[test]
+    fn the_frequency_node_is_found_under_the_device_link() {
+        let dir = std::env::temp_dir().join(format!("ww_gpu_devlink_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let device = dir.join(DRM_BASE).join("card0").join("device");
+        fs::create_dir_all(&device).unwrap();
+        fs::write(device.join("gt_RPn_freq_mhz"), "200\n").unwrap();
+        fs::write(device.join("gt_RP0_freq_mhz"), "900\n").unwrap();
+        fs::write(device.join("gt_min_freq_mhz"), "200\n").unwrap();
+        fs::write(device.join("gt_max_freq_mhz"), "900\n").unwrap();
+
+        let gpu = LinuxGpu::with_root(SysfsRoot::new(&dir)).unwrap();
+        assert_eq!(gpu.discovered_gpu_bounds(), Some((200, 900)));
+        gpu.set_gpu_freq(500).unwrap();
+        assert_eq!(
+            fs::read_to_string(device.join("gt_max_freq_mhz")).unwrap(),
+            "500"
+        );
+    }
+
+    /// Connector entries (`card0-HDMI-A-1`, `renderD128`, `version`, …) are not GPU
+    /// cards: a DRM class holding only those must report "unsupported" instead of
+    /// pointing at a connector directory.
+    #[test]
+    fn connector_entries_are_not_mistaken_for_cards() {
+        let dir = std::env::temp_dir().join(format!("ww_gpu_connectors_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for entry in ["card0-HDMI-A-1", "card1-Writeback-1", "renderD128"] {
+            fs::create_dir_all(dir.join(DRM_BASE).join(entry)).unwrap();
+            fs::write(
+                dir.join(DRM_BASE).join(entry).join("gt_max_freq_mhz"),
+                "900\n",
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(dir.join(DRM_BASE)).unwrap();
+        fs::write(dir.join(DRM_BASE).join("version"), "drm 1.1.0\n").unwrap();
+
+        assert!(LinuxGpu::with_root(SysfsRoot::new(&dir)).is_err());
+    }
+
+    /// A write never creates a node the kernel does not expose: when the discovery
+    /// found `gt_max_freq_mhz` on a card whose `gt_min_freq_mhz` is absent, only the
+    /// existing node is touched.
+    #[test]
+    fn a_write_never_creates_a_missing_writable_node() {
+        let (root, card) = card_root(
+            "nowritecreate",
+            &[
+                ("gt_RPn_freq_mhz", "300\n"),
+                ("gt_RP0_freq_mhz", "1100\n"),
+                ("gt_max_freq_mhz", "1100\n"),
+            ],
+        );
+        let gpu = LinuxGpu::with_root(root).unwrap();
+        assert_eq!(gpu.discovered_gpu_bounds(), Some((300, 1100)));
+        gpu.set_gpu_freq(700).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "700"
+        );
+        assert!(
+            !card.join("gt_min_freq_mhz").exists(),
+            "the missing node must not be created"
         );
     }
 }

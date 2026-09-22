@@ -726,6 +726,48 @@ mod tests {
         assert!(!cpu.turbo_enabled().unwrap());
     }
 
+    /// A machine whose `cpufreq` nodes exist but which exposes no EPP interface (AMD,
+    /// ARM, `acpi-cpufreq`): the setter must neither write nor *create* an EPP node,
+    /// while the governor the hardware does expose still gets the Go-derived value.
+    #[test]
+    fn epp_absent_is_not_written_nor_created() {
+        let root = empty_root("noepp");
+        for i in 0..2 {
+            write(
+                &root,
+                &format!("{CPU_BASE}/cpu{i}/cpufreq/scaling_governor"),
+                "ondemand\n",
+            );
+        }
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/scaling_available_governors"),
+            "ondemand powersave performance\n",
+        );
+
+        let cpu = LinuxCpuGovernor::with_root(root.clone());
+        assert!(
+            cpu.energy_performance_preference().is_err(),
+            "no EPP interface must be reported as unsupported"
+        );
+
+        cpu.set_energy_performance_preference("performance")
+            .unwrap();
+        for i in 0..2 {
+            assert!(
+                !root.exists(&format!(
+                    "{CPU_BASE}/cpu{i}/cpufreq/energy_performance_preference"
+                )),
+                "cpu{i}: the absent EPP node must not be created"
+            );
+        }
+        // The governor the hardware does expose is still set (Go behaviour).
+        assert_eq!(
+            root.read(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_governor")),
+            "performance"
+        );
+    }
+
     #[test]
     fn intel_no_turbo_wins_over_generic_boost() {
         let root = empty_root("intelturbo");
