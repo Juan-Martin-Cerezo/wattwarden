@@ -70,7 +70,18 @@ restore() {
 
 echo "--- snapshot de estado original"
 snapshot
-trap 'echo "--- restaurando estado"; restore' EXIT
+# Remember whether the installed service was active so it can be restored
+# afterwards: stopping it for the measurement must not leave it off.
+WAS_ACTIVE=0
+if systemctl is-active --quiet wattwarden.service 2>/dev/null; then
+  WAS_ACTIVE=1
+fi
+restore_service() {
+  if [ "$WAS_ACTIVE" -eq 1 ]; then
+    systemctl start wattwarden.service 2>/dev/null || true
+  fi
+}
+trap 'echo "--- restaurando estado"; restore; restore_service' EXIT
 
 # Detener servicios/daemons para que no ensucien la medición
 systemctl stop wattwarden.service 2>/dev/null

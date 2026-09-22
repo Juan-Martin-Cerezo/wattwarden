@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 use wattwarden_core::*;
-use wattwarden_daemon::PidManager;
+use wattwarden_daemon::{spawn, PidManager};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 
 /// Go `d.refreshDelay` default and bounds for the graph sampling interval.
@@ -266,10 +266,11 @@ impl App {
 
         self.daemon_active = daemon_is_active();
         if !self.daemon_active {
-            if let Ok(exe) = std::env::current_exe() {
-                if Command::new(exe).arg("--daemon").spawn().is_ok() {
-                    self.daemon_active = true;
-                }
+            // Go `SpawnDetachedDaemon` (`spawn_unix.go`): the child inherits
+            // nothing from the TUI's alternate screen — stdin is detached and
+            // stdout/stderr go to /var/log/wattwarden.log.
+            if spawn::spawn_detached_daemon().is_ok() {
+                self.daemon_active = true;
             }
         }
         self.daemon_checked = Instant::now();

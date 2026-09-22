@@ -6,11 +6,29 @@ use cli::{run, CliRuntime};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
 use wattwarden_core::Config;
-use wattwarden_daemon::{DaemonRunner, PidManager};
+use wattwarden_daemon::{spawn, DaemonRunner, PidManager};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 use wattwarden_tui::{run_tui, App};
+
+/// `tracing_subscriber` writer routing daemon logs to the Go log file
+/// (`/var/log/wattwarden.log`), never to stdout. Falls back to a sink when the
+/// file cannot be opened (e.g. non-root), so the TUI alternate screen is never
+/// touched either way.
+#[derive(Debug, Clone, Copy)]
+struct DaemonLogWriter;
+
+impl<'a> MakeWriter<'a> for DaemonLogWriter {
+    type Writer = Box<dyn Write + 'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        match spawn::open_daemon_log(&spawn::daemon_log_path()) {
+            Ok(f) => Box::new(f),
+            Err(_) => Box::new(std::io::sink()),
+        }
+    }
+}
 
 /// Go `service.IsDaemonActive()`: PID file alive, else `systemctl is-active`.
 fn daemon_active() -> bool {
@@ -57,9 +75,9 @@ fn start_background_daemon() -> Result<(), String> {
 
     // Go also starts an in-process loop; here the detached daemon process is the
     // durable equivalent (the foreground CLI exits immediately after this returns).
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe).arg("--daemon").spawn();
-    }
+    // Go `SpawnDetachedDaemon`: stdio redirected to /var/log/wattwarden.log so the
+    // child never writes on the caller's terminal.
+    let _ = spawn::spawn_detached_daemon();
     Ok(())
 }
 
@@ -122,11 +140,18 @@ fn build_backend() -> Result<LinuxBackend, String> {
     }
 }
 
-/// Go `service.RunDaemon`.
+/// Go `service.RunDaemon`. The tracing subscriber writes to the Go daemon log
+/// file (`/var/log/wattwarden.log`), never to stdout: `--daemon` is either run
+/// in the foreground by a service manager (which captures stdio itself) or
+/// spawned detached from the TUI/CLI (whose stdio is already redirected).
 fn run_daemon() -> Result<(), String> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new("info"))
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(DaemonLogWriter)
+                .with_ansi(false),
+        )
         .try_init()
         .ok();
 
