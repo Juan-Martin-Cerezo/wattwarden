@@ -1,69 +1,81 @@
-use crate::sysfs::{read_sysfs_u64, write_sysfs_u64};
-use std::fs;
-use std::path::{Path, PathBuf};
+use crate::sysfs::{read_sysfs_u64, write_sysfs_u64, SysfsRoot};
+use std::path::PathBuf;
 use wattwarden_core::{ChargeThreshold, Result, WattWardenError};
 
+/// Battery charge ceiling. The discovery ladder is the Rust-side extension (Go master only
+/// exposes the kbd/wifi knobs through rfkill); the *paths* must still resolve through the
+/// relocated `SysfsRoot` so the whole backend stays testable without touching real `/sys`.
 pub struct LinuxChargeThreshold {
     threshold_path: Option<PathBuf>,
+    root: SysfsRoot,
 }
 
 impl LinuxChargeThreshold {
     pub fn new() -> Self {
-        let threshold_path = Self::find_threshold_path();
-        Self { threshold_path }
+        Self::with_root(SysfsRoot::from_env())
+    }
+
+    pub fn with_root(root: SysfsRoot) -> Self {
+        let threshold_path = Self::find_threshold_path(&root);
+        Self {
+            threshold_path,
+            root,
+        }
     }
 
     pub fn with_path(threshold_path: Option<PathBuf>) -> Self {
-        Self { threshold_path }
+        Self {
+            threshold_path,
+            root: SysfsRoot::from_env(),
+        }
     }
 
-    fn find_threshold_path() -> Option<PathBuf> {
-        let base = Path::new("/sys/class/power_supply");
+    fn find_threshold_path(root: &SysfsRoot) -> Option<PathBuf> {
+        let base = "sys/class/power_supply";
         let candidates = ["BAT0", "BAT1", "BAT2", "BATT"];
-        for bat in &candidates {
+        let suffixes = [
             // Linux kernel generic ACPI standard
-            let p = base.join(bat).join("charge_control_end_threshold");
+            "charge_control_end_threshold",
+            // Lenovo ThinkPad (tp_smapi / thinkpad_acpi)
+            "charge_stop_threshold",
+            // ASUS alternate path
+            "charge_control_limit_max",
+        ];
+        for bat in &candidates {
+            for suffix in &suffixes {
+                let p = root.path(&format!("{base}/{bat}/{suffix}"));
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+
+        // Platform-driver direct paths (ASUS / Huawei)
+        for direct in [
+            "sys/devices/platform/asus-nb-wmi/charge_control_end_threshold",
+            "sys/devices/platform/huawei-wmi/charge_thresholds",
+        ] {
+            let p = root.path(direct);
             if p.exists() {
                 return Some(p);
             }
-            // Lenovo ThinkPad (tp_smapi / thinkpad_acpi)
-            let tp_p = base.join(bat).join("charge_stop_threshold");
-            if tp_p.exists() {
-                return Some(tp_p);
-            }
-            // ASUS alternate path
-            let asus_p = base.join(bat).join("charge_control_limit_max");
-            if asus_p.exists() {
-                return Some(asus_p);
-            }
-        }
-
-        // ASUS platform driver direct path
-        let asus_wmi = Path::new("/sys/devices/platform/asus-nb-wmi/charge_control_end_threshold");
-        if asus_wmi.exists() {
-            return Some(asus_wmi.to_path_buf());
-        }
-
-        // Huawei platform driver direct path
-        let huawei_wmi = Path::new("/sys/devices/platform/huawei-wmi/charge_thresholds");
-        if huawei_wmi.exists() {
-            return Some(huawei_wmi.to_path_buf());
         }
 
         // Generic fallback scan across all power supply entries
-        if let Ok(entries) = fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p1 = entry.path().join("charge_control_end_threshold");
-                if p1.exists() {
-                    return Some(p1);
-                }
-                let p2 = entry.path().join("charge_stop_threshold");
-                if p2.exists() {
-                    return Some(p2);
+        for entry in root.entries(base) {
+            for suffix in ["charge_control_end_threshold", "charge_stop_threshold"] {
+                let p = entry.join(suffix);
+                if p.exists() {
+                    return Some(p);
                 }
             }
         }
         None
+    }
+
+    /// Root the backend was built against (kept for diagnostics/tests).
+    pub fn root(&self) -> &SysfsRoot {
+        &self.root
     }
 }
 
@@ -104,29 +116,68 @@ impl ChargeThreshold for LinuxChargeThreshold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+
+    fn fake_root(tag: &str, with_threshold: bool) -> SysfsRoot {
+        let dir = std::env::temp_dir().join(format!("ww_thresh_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = SysfsRoot::new(&dir);
+        std::fs::create_dir_all(root.path("sys/class/power_supply/BAT0")).unwrap();
+        std::fs::write(root.path("sys/class/power_supply/BAT0/type"), "Battery\n").unwrap();
+        if with_threshold {
+            std::fs::write(
+                root.path("sys/class/power_supply/BAT0/charge_control_end_threshold"),
+                "80\n",
+            )
+            .unwrap();
+        }
+        root
+    }
 
     #[test]
-    fn test_mock_threshold() {
-        let tmp_dir = std::env::temp_dir().join(format!("ww_thresh_test_{}", std::process::id()));
-        let _ = fs::create_dir_all(&tmp_dir);
-        let test_file = tmp_dir.join("charge_control_end_threshold");
-
-        fs::write(&test_file, "80\n").unwrap();
-
-        let thresh = LinuxChargeThreshold::with_path(Some(test_file.clone()));
+    fn discovery_and_io_go_through_the_relocated_root() {
+        let root = fake_root("disc", true);
+        let thresh = LinuxChargeThreshold::with_root(root.clone());
         assert!(thresh.supports_threshold());
         assert_eq!(thresh.charge_threshold().unwrap(), 80);
 
         thresh.set_charge_threshold(85).unwrap();
-        assert_eq!(thresh.charge_threshold().unwrap(), 85);
+        let raw = std::fs::read_to_string(
+            root.path("sys/class/power_supply/BAT0/charge_control_end_threshold"),
+        )
+        .unwrap();
+        assert_eq!(raw, "85");
 
-        // Unsupported threshold
-        let none_thresh = LinuxChargeThreshold::with_path(None);
-        assert!(!none_thresh.supports_threshold());
-        assert!(none_thresh.charge_threshold().is_err());
-        assert!(none_thresh.set_charge_threshold(80).is_err());
+        // Requesting 200 clamps to 100 before it ever reaches the file.
+        thresh.set_charge_threshold(200).unwrap();
+        let raw = std::fs::read_to_string(
+            root.path("sys/class/power_supply/BAT0/charge_control_end_threshold"),
+        )
+        .unwrap();
+        assert_eq!(raw, "100");
 
-        let _ = fs::remove_dir_all(tmp_dir);
+        let _ = std::fs::remove_dir_all(root.root());
+    }
+
+    #[test]
+    fn missing_threshold_is_reported_as_unsupported_not_a_panic() {
+        let root = fake_root("none", false);
+        let thresh = LinuxChargeThreshold::with_root(root.clone());
+        assert!(!thresh.supports_threshold());
+        assert!(thresh.charge_threshold().is_err());
+        assert!(thresh.set_charge_threshold(80).is_err());
+
+        let _ = std::fs::remove_dir_all(root.root());
+    }
+
+    #[test]
+    fn with_path_keeps_working_for_callers_that_already_resolved_the_node() {
+        let root = fake_root("path", true);
+        let node = root.path("sys/class/power_supply/BAT0/charge_control_end_threshold");
+        let thresh = LinuxChargeThreshold::with_path(Some(node.clone()));
+        assert_eq!(thresh.charge_threshold().unwrap(), 80);
+        thresh.set_charge_threshold(70).unwrap();
+        assert_eq!(std::fs::read_to_string(&node).unwrap(), "70");
+
+        let _ = std::fs::remove_dir_all(root.root());
     }
 }

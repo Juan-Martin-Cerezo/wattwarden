@@ -1,8 +1,9 @@
+use crate::sysfs::SysfsRoot;
 use serde::Deserialize;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use wattwarden_core::CompositorFocus;
 
@@ -17,19 +18,34 @@ struct HyprActiveWindow {
 
 pub struct HyprlandIpc {
     cmd_socket_path: Option<PathBuf>,
+    root: SysfsRoot,
 }
 
 impl HyprlandIpc {
     pub fn new() -> Self {
-        let cmd_socket_path = Self::discover_socket(".socket.sock");
-        Self { cmd_socket_path }
+        Self::with_root(SysfsRoot::from_env())
+    }
+
+    /// Builds the compositor bridge against a relocated root (used by tests and by
+    /// anything that wants the socket scan to stay inside `WATTWARDEN_SYSFS_ROOT`).
+    pub fn with_root(root: SysfsRoot) -> Self {
+        let cmd_socket_path = Self::discover_socket_with_root(".socket.sock", &root);
+        Self {
+            cmd_socket_path,
+            root,
+        }
     }
 
     pub fn discover_event_socket() -> Option<PathBuf> {
-        Self::discover_socket(".socket2.sock")
+        Self::discover_socket_with_root(".socket2.sock", &SysfsRoot::from_env())
     }
 
-    fn discover_socket(socket_name: &str) -> Option<PathBuf> {
+    /// Root this bridge was built against (diagnostics/tests).
+    pub fn root(&self) -> &SysfsRoot {
+        &self.root
+    }
+
+    fn discover_socket_with_root(socket_name: &str, root: &SysfsRoot) -> Option<PathBuf> {
         // 1. Direct environment variable lookup
         if let (Ok(runtime_dir), Ok(sig)) = (
             std::env::var("XDG_RUNTIME_DIR"),
@@ -45,8 +61,8 @@ impl HyprlandIpc {
         }
 
         // 2. Multi-user scan under /run/user/ (handles sudo/daemon root execution)
-        let run_user = Path::new("/run/user");
-        if let Ok(user_entries) = fs::read_dir(run_user) {
+        let run_user = root.path("run/user");
+        if let Ok(user_entries) = fs::read_dir(&run_user) {
             for user_entry in user_entries.flatten() {
                 let hypr_dir = user_entry.path().join("hypr");
                 if let Ok(hypr_entries) = fs::read_dir(hypr_dir) {
@@ -97,7 +113,10 @@ impl CompositorFocus for HyprlandIpc {
 
 impl HyprlandIpc {
     pub fn with_socket(cmd_socket_path: Option<PathBuf>) -> Self {
-        Self { cmd_socket_path }
+        Self {
+            cmd_socket_path,
+            root: SysfsRoot::from_env(),
+        }
     }
 }
 

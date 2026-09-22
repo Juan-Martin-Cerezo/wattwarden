@@ -1,135 +1,306 @@
-use crate::sysfs::{read_sysfs_string, read_sysfs_u32, write_sysfs_string};
-use std::fs;
-use std::process::Command;
+//! Kernel / driver energy tweaks.
+//!
+//! Faithful transcription of `hal/backend_linux.go`:
+//!
+//! * WiFi power save -> `iw dev` to list interfaces, `iw dev X get power_save`
+//!   (contains `on`), then the `/sys/module/iwlwifi/parameters/power_save` driver
+//!   parameter (`Y`/`N`) as fallback. `Set` writes the driver parameter first and
+//!   then `iw dev X set power_save on|off` for every interface.
+//! * Audio power save -> `/sys/module/snd_hda_intel/parameters/power_save`
+//!   (`"0"` means off) plus `power_save_controller` (`Y`/`N`). Note Go's getter is
+//!   `readSys(..) != "0"`, so a *missing* module parameter reads as `true`.
+//! * Autosuspend -> globs `/sys/bus/usb/devices/*/power/control` (get) and both USB
+//!   and PCI device globs (set): some device in `auto` means enabled; `set(true)`
+//!   writes `"auto"`, `set(false)` writes `"on"`.
+//! * NMI watchdog -> `/proc/sys/kernel/nmi_watchdog` (`"1"` = on).
+//! * VM writeback -> `/proc/sys/vm/dirty_writeback_centisecs`, clamped `100..=6000`
+//!   centiseconds.
+//! * `ProcessPurge` -> write `"3"` to `/proc/sys/vm/drop_caches`.
+//!
+//! Every write is best effort (Go's `writeSys`), so running unprivileged or on a
+//! machine without those knobs degrades silently instead of aborting.
+
+use crate::linux::cmd;
+use crate::linux::sysfs::SysfsRoot;
 use wattwarden_core::{Result, SystemTweaksController};
 
-#[derive(Debug, Clone, Default)]
-pub struct LinuxSystemTweaks;
+const IWLWIFI_POWER_SAVE: &str = "sys/module/iwlwifi/parameters/power_save";
+const SND_HDA_POWER_SAVE: &str = "sys/module/snd_hda_intel/parameters/power_save";
+const SND_HDA_POWER_SAVE_CONTROLLER: &str =
+    "sys/module/snd_hda_intel/parameters/power_save_controller";
+const USB_DEVICES: &str = "sys/bus/usb/devices";
+const PCI_DEVICES: &str = "sys/bus/pci/devices";
+const NMI_WATCHDOG: &str = "proc/sys/kernel/nmi_watchdog";
+const DIRTY_WRITEBACK: &str = "proc/sys/vm/dirty_writeback_centisecs";
+const DROP_CACHES: &str = "proc/sys/vm/drop_caches";
+
+/// Go `SetVMWriteback` bounds (centiseconds).
+pub const VM_WRITEBACK_MIN_CENTISECS: u32 = 100;
+pub const VM_WRITEBACK_MAX_CENTISECS: u32 = 6000;
+
+#[derive(Debug, Clone)]
+pub struct LinuxSystemTweaks {
+    root: SysfsRoot,
+}
 
 impl LinuxSystemTweaks {
+    /// Uses the root from `WATTWARDEN_SYSFS_ROOT` (default `/`).
     pub fn new() -> Self {
-        Self
+        Self::with_root(SysfsRoot::from_env())
     }
 
-    fn find_wifi_interfaces() -> Vec<String> {
-        let mut ifaces = Vec::new();
-        if let Ok(output) = Command::new("iw").arg("dev").output() {
-            let out_str = String::from_utf8_lossy(&output.stdout);
-            for line in out_str.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 && parts[0] == "Interface" {
-                    ifaces.push(parts[1].to_string());
+    pub fn with_root(root: SysfsRoot) -> Self {
+        Self { root }
+    }
+
+    /// Go `iw dev | awk '$1=="Interface"{print $2}'` without the shell pipeline.
+    fn wifi_interfaces() -> Vec<String> {
+        cmd::run_capture("iw", &["dev"])
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                match (fields.next(), fields.next()) {
+                    (Some("Interface"), Some(name)) => Some(name.to_string()),
+                    _ => None,
                 }
+            })
+            .collect()
+    }
+
+    /// `power/control` nodes of every USB and PCI device, in glob order.
+    fn control_nodes(&self) -> Vec<String> {
+        let mut nodes: Vec<String> = Vec::new();
+        for base in [USB_DEVICES, PCI_DEVICES] {
+            for device in self.root.names(base) {
+                nodes.push(format!("{base}/{device}/power/control"));
             }
         }
-        ifaces
+        nodes
+    }
+}
+
+impl Default for LinuxSystemTweaks {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl SystemTweaksController for LinuxSystemTweaks {
     fn wifi_power_save(&self) -> Result<bool> {
-        // First check iw dev
-        for iface in Self::find_wifi_interfaces() {
-            if let Ok(output) = Command::new("iw")
-                .args(["dev", &iface, "get", "power_save"])
-                .output()
-            {
-                let out = String::from_utf8_lossy(&output.stdout);
-                if out.contains("Power save: on") {
-                    return Ok(true);
-                }
+        for iface in Self::wifi_interfaces() {
+            if cmd::run_capture("iw", &["dev", &iface, "get", "power_save"]).contains("on") {
+                return Ok(true);
             }
         }
-        // Fallback to driver parameter
-        if let Ok(val) = read_sysfs_string("/sys/module/iwlwifi/parameters/power_save") {
-            return Ok(val.trim() == "Y" || val.trim() == "1");
-        }
-        Ok(false)
+        // Fallback: Intel driver parameter, literal "Y" like Go.
+        Ok(self.root.read(IWLWIFI_POWER_SAVE) == "Y")
     }
 
     fn set_wifi_power_save(&self, enabled: bool) -> Result<()> {
-        let iw_state = if enabled { "on" } else { "off" };
-        for iface in Self::find_wifi_interfaces() {
-            let _ = Command::new("iw")
-                .args(["dev", &iface, "set", "power_save", iw_state])
-                .status();
+        self.root
+            .write_best_effort(IWLWIFI_POWER_SAVE, if enabled { "Y" } else { "N" });
+
+        let state = if enabled { "on" } else { "off" };
+        for iface in Self::wifi_interfaces() {
+            cmd::run_ignored("iw", &["dev", &iface, "set", "power_save", state]);
         }
-        let driver_val = if enabled { "Y" } else { "N" };
-        let _ = write_sysfs_string("/sys/module/iwlwifi/parameters/power_save", driver_val);
         Ok(())
     }
 
     fn audio_power_save(&self) -> Result<bool> {
-        if let Ok(val) = read_sysfs_string("/sys/module/snd_hda_intel/parameters/power_save") {
-            return Ok(val.trim() != "0");
-        }
-        Ok(false)
+        // Go: `readSys(..) != "0"` — a missing file therefore reads as enabled.
+        Ok(self.root.read(SND_HDA_POWER_SAVE) != "0")
     }
 
     fn set_audio_power_save(&self, enabled: bool) -> Result<()> {
-        let ps_val = if enabled { "1" } else { "0" };
-        let ctrl_val = if enabled { "Y" } else { "N" };
-        let _ = write_sysfs_string("/sys/module/snd_hda_intel/parameters/power_save", ps_val);
-        let _ = write_sysfs_string(
-            "/sys/module/snd_hda_intel/parameters/power_save_controller",
-            ctrl_val,
+        self.root
+            .write_best_effort(SND_HDA_POWER_SAVE, if enabled { "1" } else { "0" });
+        self.root.write_best_effort(
+            SND_HDA_POWER_SAVE_CONTROLLER,
+            if enabled { "Y" } else { "N" },
         );
         Ok(())
     }
 
     fn autosuspend(&self) -> Result<bool> {
-        if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
-            for entry in entries.flatten() {
-                let p = entry.path().join("power/control");
-                if let Ok(ctrl) = read_sysfs_string(p) {
-                    if ctrl.trim() == "auto" {
-                        return Ok(true);
-                    }
-                }
+        for device in self.root.names(USB_DEVICES) {
+            if self
+                .root
+                .read(&format!("{USB_DEVICES}/{device}/power/control"))
+                == "auto"
+            {
+                return Ok(true);
             }
         }
         Ok(false)
     }
 
     fn set_autosuspend(&self, enabled: bool) -> Result<()> {
-        let val = if enabled { "auto" } else { "on" };
-
-        if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
-            for entry in entries.flatten() {
-                let _ = write_sysfs_string(entry.path().join("power/control"), val);
-            }
-        }
-        if let Ok(entries) = fs::read_dir("/sys/bus/pci/devices") {
-            for entry in entries.flatten() {
-                let _ = write_sysfs_string(entry.path().join("power/control"), val);
-            }
+        let value = if enabled { "auto" } else { "on" };
+        for node in self.control_nodes() {
+            self.root.write_best_effort(&node, value);
         }
         Ok(())
     }
 
     fn nmi_watchdog(&self) -> Result<bool> {
-        if let Ok(val) = read_sysfs_string("/proc/sys/kernel/nmi_watchdog") {
-            return Ok(val.trim() == "1");
-        }
-        Ok(true)
+        Ok(self.root.read(NMI_WATCHDOG) == "1")
     }
 
     fn set_nmi_watchdog(&self, enabled: bool) -> Result<()> {
-        let val = if enabled { "1" } else { "0" };
-        write_sysfs_string("/proc/sys/kernel/nmi_watchdog", val)
+        self.root
+            .write_best_effort(NMI_WATCHDOG, if enabled { "1" } else { "0" });
+        Ok(())
     }
 
     fn vm_writeback_seconds(&self) -> Result<u32> {
-        let cs = read_sysfs_u32("/proc/sys/vm/dirty_writeback_centisecs")?;
-        Ok(cs / 100)
+        // Go `GetVMWriteback` returns centiseconds (0 when unparsable); the Rust API
+        // exposes whole seconds, hence the integer division.
+        let centisecs = self.root.read_i64(DIRTY_WRITEBACK).unwrap_or(0);
+        Ok((centisecs.max(0) / 100) as u32)
     }
 
     fn set_vm_writeback_seconds(&self, seconds: u32) -> Result<()> {
-        let cs = (seconds * 100).clamp(100, 6000);
-        write_sysfs_string("/proc/sys/vm/dirty_writeback_centisecs", &cs.to_string())
+        let centisecs = seconds
+            .saturating_mul(100)
+            .clamp(VM_WRITEBACK_MIN_CENTISECS, VM_WRITEBACK_MAX_CENTISECS);
+        self.root
+            .write_best_effort(DIRTY_WRITEBACK, &centisecs.to_string());
+        Ok(())
     }
 
     fn process_purge(&self) -> Result<()> {
-        write_sysfs_string("/proc/sys/vm/drop_caches", "3")
+        self.root.write_best_effort(DROP_CACHES, "3");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn root(tag: &str) -> SysfsRoot {
+        let dir = std::env::temp_dir().join(format!("ww_tweaks_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir).unwrap();
+        SysfsRoot::new(dir)
+    }
+
+    fn write(root: &SysfsRoot, rel: &str, value: &str) {
+        let path = root.path(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, value).unwrap();
+    }
+
+    #[test]
+    fn audio_power_save_matches_go_including_missing_file() {
+        let root = root("audio");
+        let tweaks = LinuxSystemTweaks::with_root(root.clone());
+
+        // Missing /sys/module/snd_hda_intel -> "" != "0" -> true (Go behaviour).
+        assert!(tweaks.audio_power_save().unwrap());
+
+        write(&root, SND_HDA_POWER_SAVE, "0\n");
+        assert!(!tweaks.audio_power_save().unwrap());
+        write(&root, SND_HDA_POWER_SAVE_CONTROLLER, "N\n");
+
+        tweaks.set_audio_power_save(true).unwrap();
+        assert_eq!(root.read(SND_HDA_POWER_SAVE), "1");
+        assert_eq!(root.read(SND_HDA_POWER_SAVE_CONTROLLER), "Y");
+        assert!(tweaks.audio_power_save().unwrap());
+
+        tweaks.set_audio_power_save(false).unwrap();
+        assert_eq!(root.read(SND_HDA_POWER_SAVE), "0");
+        assert_eq!(root.read(SND_HDA_POWER_SAVE_CONTROLLER), "N");
+    }
+
+    #[test]
+    fn wifi_power_save_driver_fallback_uses_y_and_n() {
+        let root = root("wifi");
+        let tweaks = LinuxSystemTweaks::with_root(root.clone());
+        write(&root, IWLWIFI_POWER_SAVE, "N\n");
+
+        tweaks.set_wifi_power_save(true).unwrap();
+        assert_eq!(root.read(IWLWIFI_POWER_SAVE), "Y");
+        tweaks.set_wifi_power_save(false).unwrap();
+        assert_eq!(root.read(IWLWIFI_POWER_SAVE), "N");
+    }
+
+    #[test]
+    fn autosuspend_get_and_set_over_usb_and_pci() {
+        let root = root("auto");
+        let tweaks = LinuxSystemTweaks::with_root(root.clone());
+        write(&root, "sys/bus/usb/devices/usb1/power/control", "on\n");
+        write(&root, "sys/bus/usb/devices/1-1/power/control", "on\n");
+        write(
+            &root,
+            "sys/bus/pci/devices/0000:00:14.0/power/control",
+            "on\n",
+        );
+
+        assert!(!tweaks.autosuspend().unwrap());
+
+        tweaks.set_autosuspend(true).unwrap();
+        assert_eq!(root.read("sys/bus/usb/devices/usb1/power/control"), "auto");
+        assert_eq!(root.read("sys/bus/usb/devices/1-1/power/control"), "auto");
+        assert_eq!(
+            root.read("sys/bus/pci/devices/0000:00:14.0/power/control"),
+            "auto"
+        );
+        assert!(tweaks.autosuspend().unwrap());
+
+        tweaks.set_autosuspend(false).unwrap();
+        assert_eq!(root.read("sys/bus/usb/devices/usb1/power/control"), "on");
+        assert_eq!(
+            root.read("sys/bus/pci/devices/0000:00:14.0/power/control"),
+            "on"
+        );
+        assert!(!tweaks.autosuspend().unwrap());
+    }
+
+    #[test]
+    fn nmi_watchdog_and_vm_writeback() {
+        let root = root("kernel");
+        let tweaks = LinuxSystemTweaks::with_root(root.clone());
+
+        // Missing files -> Go's "1" comparison fails and Atoi yields 0.
+        assert!(!tweaks.nmi_watchdog().unwrap());
+        assert_eq!(tweaks.vm_writeback_seconds().unwrap(), 0);
+
+        write(&root, NMI_WATCHDOG, "1\n");
+        write(&root, DIRTY_WRITEBACK, "500\n");
+        assert!(tweaks.nmi_watchdog().unwrap());
+        assert_eq!(tweaks.vm_writeback_seconds().unwrap(), 5);
+
+        tweaks.set_nmi_watchdog(false).unwrap();
+        assert_eq!(root.read(NMI_WATCHDOG), "0");
+        assert!(!tweaks.nmi_watchdog().unwrap());
+
+        // Clamp is applied on the centisecond value Go writes.
+        tweaks.set_vm_writeback_seconds(6).unwrap();
+        assert_eq!(root.read(DIRTY_WRITEBACK), "600");
+        tweaks.set_vm_writeback_seconds(0).unwrap();
+        assert_eq!(root.read(DIRTY_WRITEBACK), "100");
+        tweaks.set_vm_writeback_seconds(1000).unwrap();
+        assert_eq!(root.read(DIRTY_WRITEBACK), "6000");
+    }
+
+    #[test]
+    fn process_purge_writes_three() {
+        let root = root("purge");
+        let tweaks = LinuxSystemTweaks::with_root(root.clone());
+        write(&root, DROP_CACHES, "0\n");
+        tweaks.process_purge().unwrap();
+        assert_eq!(root.read(DROP_CACHES), "3");
+
+        // Must not panic on a root without /proc (unprivileged / container).
+        let missing = LinuxSystemTweaks::with_root(SysfsRoot::new("/definitely/not/a/root"));
+        missing.process_purge().unwrap();
+        missing.set_nmi_watchdog(true).unwrap();
+        missing.set_autosuspend(true).unwrap();
+        missing.set_audio_power_save(true).unwrap();
+        missing.set_vm_writeback_seconds(5).unwrap();
+        assert!(!missing.autosuspend().unwrap());
     }
 }

@@ -1,6 +1,7 @@
 pub mod aspm;
 pub mod backlight;
 pub mod battery;
+pub mod cmd;
 pub mod cpu;
 pub mod gpu;
 pub mod hyprland;
@@ -20,6 +21,7 @@ pub use hyprland::HyprlandIpc;
 pub use netlink::NetlinkUeventListener;
 pub use peripherals::LinuxPeripherals;
 pub use rapl::LinuxRapl;
+pub use sysfs::SysfsRoot;
 pub use threshold::LinuxChargeThreshold;
 pub use tweaks::LinuxSystemTweaks;
 
@@ -40,16 +42,23 @@ pub struct LinuxBackend {
 
 impl LinuxBackend {
     pub fn new() -> Result<Self> {
-        let battery = LinuxBattery::new();
-        let cpu = LinuxCpuGovernor::new();
-        let rapl = LinuxRapl::new().ok();
-        let gpu = LinuxGpu::new().ok();
-        let aspm = LinuxAspm::new().ok();
-        let backlight = LinuxBacklight::new().ok();
-        let threshold = LinuxChargeThreshold::new();
-        let peripherals = LinuxPeripherals::new();
-        let tweaks = LinuxSystemTweaks::new();
-        let hyprland = HyprlandIpc::new();
+        Self::with_root(SysfsRoot::from_env())
+    }
+
+    /// Builds the backend against a relocated `/sys` + `/proc` root.
+    /// This is what makes the whole Linux backend testable without root or real hardware
+    /// (`WATTWARDEN_SYSFS_ROOT=/tmp/fake-laptop`).
+    pub fn with_root(root: SysfsRoot) -> Result<Self> {
+        let battery = LinuxBattery::with_root(root.clone());
+        let cpu = LinuxCpuGovernor::with_root(root.clone());
+        let rapl = LinuxRapl::with_root(root.clone()).ok();
+        let gpu = LinuxGpu::with_root(root.clone()).ok();
+        let aspm = LinuxAspm::with_root(root.clone()).ok();
+        let backlight = LinuxBacklight::with_root(root.clone()).ok();
+        let threshold = LinuxChargeThreshold::with_root(root.clone());
+        let peripherals = LinuxPeripherals::with_root(root.clone());
+        let tweaks = LinuxSystemTweaks::with_root(root.clone());
+        let hyprland = HyprlandIpc::with_root(root);
 
         Ok(Self {
             battery,

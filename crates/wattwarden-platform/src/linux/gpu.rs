@@ -1,72 +1,126 @@
-use crate::sysfs::{read_sysfs_u32, write_sysfs_string};
-use std::path::{Path, PathBuf};
+//! Intel/AMD integrated GPU frequency control via the DRM `gt_*` sysfs knobs.
+//!
+//! Faithful transcription of `hal/backend_linux.go`:
+//!
+//! * `getGPUPath()` -> `/sys/class/drm/card1` when `gt_max_freq_mhz` exists there,
+//!   otherwise `/sys/class/drm/card0`, otherwise "no support".
+//! * `GetGPUBounds()` -> no card means `(300, 1100)`; otherwise
+//!   min = `gt_RPn_freq_mhz` else `gt_min_freq_mhz`, max = `gt_RP0_freq_mhz` else
+//!   `gt_max_freq_mhz`, each falling back to `300`/`1100` on parse failure.
+//! * `GetGPUFreq()` -> 0 when there is no card or the file is unparsable.
+//! * `SetGPUFreq(mhz)` -> no card is a no-op; otherwise clamp to bounds and write
+//!   `gt_min_freq_mhz = min` **first**, then `gt_max_freq_mhz = mhz` (Go warns that
+//!   writing the max below the current min is rejected by the kernel, hence order).
+
+use crate::linux::sysfs::SysfsRoot;
+use std::path::PathBuf;
 use wattwarden_core::{GpuController, Result, WattWardenError};
+
+/// Relative base of the DRM class directory.
+const DRM_BASE: &str = "sys/class/drm";
+
+/// Go fallbacks for `GetGPUBounds`.
+pub const FALLBACK_MIN_MHZ: u32 = 300;
+pub const FALLBACK_MAX_MHZ: u32 = 1100;
 
 #[derive(Debug, Clone)]
 pub struct LinuxGpu {
-    card_path: PathBuf,
+    root: SysfsRoot,
+    /// Absolute path of the discovered card directory (`None` = unsupported).
+    card: Option<PathBuf>,
 }
 
 impl LinuxGpu {
+    /// Uses the root from `WATTWARDEN_SYSFS_ROOT` (default `/`).
     pub fn new() -> Result<Self> {
-        let drm_dir = Path::new("/sys/class/drm");
-        if let Ok(entries) = std::fs::read_dir(drm_dir) {
-            let mut cards = Vec::new();
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("card") && !name.contains('-') {
-                    cards.push(entry.path());
-                }
-            }
-            cards.sort();
-            cards.reverse();
-            for p in cards {
-                if p.join("gt_max_freq_mhz").exists() {
-                    return Ok(Self { card_path: p });
-                }
-            }
-        }
-        Err(WattWardenError::InterfaceNotFound(
-            "No controllable GPU frequency interface discovered in /sys/class/drm".into(),
-        ))
+        Self::with_root(SysfsRoot::from_env())
     }
 
+    pub fn with_root(root: SysfsRoot) -> Result<Self> {
+        let card = Self::discover(&root);
+        if card.is_none() {
+            return Err(WattWardenError::InterfaceNotFound(
+                "No controllable GPU frequency interface discovered in /sys/class/drm".into(),
+            ));
+        }
+        Ok(Self { root, card })
+    }
+
+    /// Compatibility constructor: point the controller at an explicit absolute card
+    /// path (used by tests and by callers that already resolved the node).
     pub fn with_card_path(card_path: PathBuf) -> Self {
-        Self { card_path }
+        Self {
+            root: SysfsRoot::new("/"),
+            card: Some(card_path),
+        }
+    }
+
+    /// Go `getGPUPath()`: `card1` first, then `card0`, else nothing.
+    fn discover(root: &SysfsRoot) -> Option<PathBuf> {
+        ["card1", "card0"].iter().find_map(|card| {
+            let rel = format!("{DRM_BASE}/{card}");
+            root.exists(&format!("{rel}/gt_max_freq_mhz"))
+                .then(|| root.path(&rel))
+        })
+    }
+
+    /// True when a card exposing `gt_max_freq_mhz` was found.
+    pub fn is_supported(&self) -> bool {
+        self.card.is_some()
+    }
+
+    fn card_read(&self, leaf: &str) -> Option<u32> {
+        let card = self.card.as_ref()?;
+        let raw = self.root.read_path(&card.join(leaf));
+        if raw.is_empty() {
+            return None;
+        }
+        raw.parse::<u32>().ok()
+    }
+
+    fn card_write(&self, leaf: &str, value: u32) {
+        if let Some(card) = self.card.as_ref() {
+            self.root
+                .write_best_effort_path(&card.join(leaf), &value.to_string());
+        }
     }
 }
 
 impl GpuController for LinuxGpu {
     fn gpu_bounds(&self) -> Result<(u32, u32)> {
-        let min_p = self.card_path.join("gt_RPn_freq_mhz");
-        let min_fallback = self.card_path.join("gt_min_freq_mhz");
-        let min_mhz = read_sysfs_u32(&min_p)
-            .or_else(|_| read_sysfs_u32(&min_fallback))
-            .unwrap_or(300);
+        if self.card.is_none() {
+            return Ok((FALLBACK_MIN_MHZ, FALLBACK_MAX_MHZ));
+        }
 
-        let max_p = self.card_path.join("gt_RP0_freq_mhz");
-        let max_fallback = self.card_path.join("gt_max_freq_mhz");
-        let max_mhz = read_sysfs_u32(&max_p)
-            .or_else(|_| read_sysfs_u32(&max_fallback))
-            .unwrap_or(1100);
+        let min = self
+            .card_read("gt_RPn_freq_mhz")
+            .or_else(|| self.card_read("gt_min_freq_mhz"))
+            .unwrap_or(FALLBACK_MIN_MHZ);
 
-        Ok((min_mhz, max_mhz))
+        let max = self
+            .card_read("gt_RP0_freq_mhz")
+            .or_else(|| self.card_read("gt_max_freq_mhz"))
+            .unwrap_or(FALLBACK_MAX_MHZ);
+
+        Ok((min, max))
     }
 
     fn gpu_freq(&self) -> Result<u32> {
-        let max_p = self.card_path.join("gt_max_freq_mhz");
-        read_sysfs_u32(&max_p)
+        // Go: missing card or unparsable value both yield 0.
+        Ok(self.card_read("gt_max_freq_mhz").unwrap_or(0))
     }
 
     fn set_gpu_freq(&self, mhz: u32) -> Result<()> {
-        let (min_b, max_b) = self.gpu_bounds()?;
-        let target = mhz.clamp(min_b, max_b);
+        if self.card.is_none() {
+            return Ok(()); // Go `SetGPUFreq` returns early when there is no path.
+        }
+        let (min, max) = self.gpu_bounds()?;
+        let target = mhz.clamp(min, max);
 
-        let min_p = self.card_path.join("gt_min_freq_mhz");
-        let max_p = self.card_path.join("gt_max_freq_mhz");
-
-        let _ = write_sysfs_string(&min_p, &min_b.to_string());
-        write_sysfs_string(&max_p, &target.to_string())
+        // Order matters: the software minimum first, then the user limit.
+        self.card_write("gt_min_freq_mhz", min);
+        self.card_write("gt_max_freq_mhz", target);
+        Ok(())
     }
 }
 
@@ -75,27 +129,102 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn card_root(tag: &str, files: &[(&str, &str)]) -> (SysfsRoot, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ww_gpu_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let card = dir.join(DRM_BASE).join("card0");
+        fs::create_dir_all(&card).unwrap();
+        for (name, value) in files {
+            fs::write(card.join(name), value).unwrap();
+        }
+        (SysfsRoot::new(dir), card)
+    }
+
     #[test]
-    fn test_mock_gpu_controller() {
-        let tmp_dir = std::env::temp_dir().join(format!("ww_gpu_test_{}", std::process::id()));
-        let card_dir = tmp_dir.join("card0");
-        let _ = fs::create_dir_all(&card_dir);
+    fn card1_is_preferred_over_card0() {
+        let dir = std::env::temp_dir().join(format!("ww_gpu_order_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for card in ["card0", "card1"] {
+            fs::create_dir_all(dir.join(DRM_BASE).join(card)).unwrap();
+            fs::write(
+                dir.join(DRM_BASE).join(card).join("gt_max_freq_mhz"),
+                "1000\n",
+            )
+            .unwrap();
+        }
+        let gpu = LinuxGpu::with_root(SysfsRoot::new(&dir)).unwrap();
+        assert_eq!(gpu.card.as_ref().unwrap().file_name().unwrap(), "card1");
+        assert!(gpu.is_supported());
+    }
 
-        fs::write(card_dir.join("gt_RPn_freq_mhz"), "350\n").unwrap();
-        fs::write(card_dir.join("gt_RP0_freq_mhz"), "1200\n").unwrap();
-        fs::write(card_dir.join("gt_min_freq_mhz"), "350\n").unwrap();
-        fs::write(card_dir.join("gt_max_freq_mhz"), "1000\n").unwrap();
+    #[test]
+    fn no_card_is_unsupported_but_degrades_gracefully() {
+        let dir = std::env::temp_dir().join(format!("ww_gpu_none_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(LinuxGpu::with_root(SysfsRoot::new(dir)).is_err());
 
-        let gpu = LinuxGpu::with_card_path(card_dir.clone());
-        let (min_b, max_b) = gpu.gpu_bounds().unwrap();
-        assert_eq!(min_b, 350);
-        assert_eq!(max_b, 1200);
+        let gpu = LinuxGpu::with_card_path(PathBuf::from("/definitely/not/here"));
+        assert_eq!(gpu.gpu_bounds().unwrap(), (300, 1100));
+        assert_eq!(gpu.gpu_freq().unwrap(), 0);
+        gpu.set_gpu_freq(900).unwrap(); // must not panic
+    }
 
-        assert_eq!(gpu.gpu_freq().unwrap(), 1000);
+    #[test]
+    fn bounds_fall_back_through_rpn_then_gt_min() {
+        let (root, _card) = card_root(
+            "fallback",
+            &[("gt_max_freq_mhz", "900\n"), ("gt_min_freq_mhz", "250\n")],
+        );
+        let gpu = LinuxGpu::with_root(root).unwrap();
+        assert_eq!(gpu.gpu_bounds().unwrap(), (250, 900));
 
-        gpu.set_gpu_freq(800).unwrap();
-        assert_eq!(gpu.gpu_freq().unwrap(), 800);
+        let (root, _card) = card_root("final", &[("gt_max_freq_mhz", "1000\n")]);
+        let gpu = LinuxGpu::with_root(root).unwrap();
+        assert_eq!(gpu.gpu_bounds().unwrap(), (300, 1000));
+    }
 
-        let _ = fs::remove_dir_all(tmp_dir);
+    #[test]
+    fn set_writes_min_then_max_with_clamping() {
+        let (root, card) = card_root(
+            "writes",
+            &[
+                ("gt_RPn_freq_mhz", "300\n"),
+                ("gt_RP0_freq_mhz", "1100\n"),
+                ("gt_min_freq_mhz", "300\n"),
+                ("gt_max_freq_mhz", "1100\n"),
+            ],
+        );
+        let gpu = LinuxGpu::with_root(root).unwrap();
+
+        gpu.set_gpu_freq(900).unwrap();
+        assert_eq!(
+            fs::read_to_string(card.join("gt_min_freq_mhz")).unwrap(),
+            "300"
+        );
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "900"
+        );
+
+        gpu.set_gpu_freq(99_999).unwrap();
+        assert_eq!(
+            fs::read_to_string(card.join("gt_min_freq_mhz")).unwrap(),
+            "300"
+        );
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "1100"
+        );
+
+        gpu.set_gpu_freq(10).unwrap();
+        assert_eq!(
+            fs::read_to_string(card.join("gt_min_freq_mhz")).unwrap(),
+            "300"
+        );
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "300"
+        );
     }
 }
