@@ -262,7 +262,11 @@ mod tests {
     fn percentage_and_charging_follow_go_rules() {
         let root = root("basic");
         fs::write(root.path("sys/class/power_supply/BAT0/capacity"), "75\n").unwrap();
-        fs::write(root.path("sys/class/power_supply/BAT0/status"), "Discharging\n").unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/status"),
+            "Discharging\n",
+        )
+        .unwrap();
 
         let bat = LinuxBattery::with_root(root.clone());
         assert!(bat.has_battery());
@@ -296,10 +300,26 @@ mod tests {
     fn time_remaining_uses_charge_now_formula() {
         let root = root("chargeformula");
         // charge_now (uAh) * voltage_now (uV) / 1e6 -> energy, current_now (uA) * voltage (uV) / 1e6
-        fs::write(root.path("sys/class/power_supply/BAT0/status"), "Discharging\n").unwrap();
-        fs::write(root.path("sys/class/power_supply/BAT0/charge_now"), "4000000").unwrap();
-        fs::write(root.path("sys/class/power_supply/BAT0/current_now"), "-1000000").unwrap();
-        fs::write(root.path("sys/class/power_supply/BAT0/voltage_now"), "10000000").unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/status"),
+            "Discharging\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/charge_now"),
+            "4000000",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/current_now"),
+            "-1000000",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/voltage_now"),
+            "10000000",
+        )
+        .unwrap();
 
         let bat = LinuxBattery::with_root(root);
         // energy = 4e6 * (1e7/1e6) = 4e7 ; power = 1e6 * (1e7/1e6) = 1e7 -> 4h
@@ -309,19 +329,31 @@ mod tests {
     #[test]
     fn time_remaining_reports_charging_and_calculating() {
         let root = root("calc");
-        fs::write(root.path("sys/class/power_supply/BAT0/status"), "Discharging\n").unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/status"),
+            "Discharging\n",
+        )
+        .unwrap();
         // No energy/power information anywhere.
         let bat = LinuxBattery::with_root(root.clone());
         assert_eq!(bat.time_remaining().unwrap(), "Calculating...");
 
-        fs::write(root.path("sys/class/power_supply/BAT0/status"), "Charging\n").unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/status"),
+            "Charging\n",
+        )
+        .unwrap();
         assert_eq!(bat.time_remaining().unwrap(), "Charging");
     }
 
     #[test]
     fn uevent_is_the_second_path_for_time_remaining() {
         let root = root("uevent");
-        fs::write(root.path("sys/class/power_supply/BAT0/status"), "Discharging\n").unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/status"),
+            "Discharging\n",
+        )
+        .unwrap();
         fs::write(
             root.path("sys/class/power_supply/BAT0/uevent"),
             "POWER_SUPPLY_NAME=BAT0\nPOWER_SUPPLY_ENERGY_NOW=30000000\nPOWER_SUPPLY_POWER_NOW=10000000\n",
@@ -338,12 +370,24 @@ mod tests {
         let root = root("watts");
         let bat = LinuxBattery::with_root(root.clone());
         // 1. power_now
-        fs::write(root.path("sys/class/power_supply/BAT0/power_now"), "15000000").unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/power_now"),
+            "15000000",
+        )
+        .unwrap();
         assert!((bat.consumption_watts().unwrap() - 15.0).abs() < 1e-9);
         // 2. current * voltage
         fs::remove_file(root.path("sys/class/power_supply/BAT0/power_now")).unwrap();
-        fs::write(root.path("sys/class/power_supply/BAT0/current_now"), "2000000").unwrap();
-        fs::write(root.path("sys/class/power_supply/BAT0/voltage_now"), "10000000").unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/current_now"),
+            "2000000",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/voltage_now"),
+            "10000000",
+        )
+        .unwrap();
         assert!((bat.consumption_watts().unwrap() - 20.0).abs() < 1e-9);
         // 3. nothing
         fs::remove_file(root.path("sys/class/power_supply/BAT0/current_now")).unwrap();

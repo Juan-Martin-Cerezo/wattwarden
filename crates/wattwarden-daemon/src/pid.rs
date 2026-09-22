@@ -48,11 +48,19 @@ impl PidManager {
             )));
         }
 
+        if let Some(parent) = self.pid_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
         let pid = std::process::id();
         fs::write(&self.pid_path, pid.to_string()).map_err(|e| WattWardenError::Io {
             path: self.pid_path.clone(),
             source: e,
         })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.pid_path, fs::Permissions::from_mode(0o644));
+        }
         Ok(())
     }
 

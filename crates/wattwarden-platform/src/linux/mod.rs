@@ -74,6 +74,10 @@ impl LinuxBackend {
         })
     }
 
+    pub fn root(&self) -> &SysfsRoot {
+        self.hyprland.root()
+    }
+
     pub fn capabilities(&self) -> HardwareCapabilities {
         HardwareCapabilities {
             has_battery: self.battery.has_battery(),
@@ -150,20 +154,18 @@ impl LinuxBackend {
                 let _ = self.tweaks.set_autosuspend(true);
                 let _ = self.tweaks.set_nmi_watchdog(false);
                 let _ = self.tweaks.set_vm_writeback_seconds(60);
-                let _ = self.tweaks.process_purge();
             }
             PowerProfile::Normal => {
                 let _ = self.cpu.set_online_cores(self.cpu.num_cpus());
                 let (_, max_freq) = self.cpu.freq_bounds().unwrap_or((400, 3500));
                 let _ = self.cpu.set_freq_limit(max_freq);
                 let _ = self.cpu.set_turbo_enabled(true);
-                let _ = self
-                    .cpu
-                    .set_energy_performance_preference("balance_performance");
+                let _ = self.cpu.set_energy_performance_preference("default");
 
                 if let Some(rapl) = &self.rapl {
-                    let _ = rapl.set_pl1_watts(45);
-                    let _ = rapl.set_pl2_watts(65);
+                    let (_, max_w) = rapl.rapl_bounds().unwrap_or((5, 115));
+                    let _ = rapl.set_pl1_watts(max_w);
+                    let _ = rapl.set_pl2_watts(max_w);
                 }
                 if let Some(gpu) = &self.gpu {
                     let (_, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
