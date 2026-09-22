@@ -202,25 +202,11 @@ impl App {
         self.daemon_checked = Instant::now();
     }
 
-    /// Stops the background daemon before a manual hardware write, mirroring Go's
-    /// `b.StopDaemon()` (which is a no-op when nothing is running). Also disables
-    /// `auto_extreme_enabled` so systemd's `Restart=always` does not bring it back.
+    /// Go `b.StopDaemon()` (`backend_linux.go:743-751`): closes the in-process
+    /// loop, unconditionally and without touching any config or service. Every
+    /// manual `Inc`/`Dec` pairs this with the ticking-loop stop, and the modal
+    /// confirm plus the `r` hotkey call the full `StopBackgroundDaemon`.
     pub fn stop_daemon(&mut self) {
-        self.refresh_daemon_state();
-        if !self.daemon_active {
-            return;
-        }
-
-        self.config.auto_extreme_enabled = false;
-        let _ = self.config.save(None);
-
-        #[cfg(target_os = "linux")]
-        {
-            let _ = Command::new("systemctl")
-                .args(["stop", "wattwarden.service"])
-                .status();
-        }
-
         let pid = PidManager::new();
         if let Some(p) = pid.read_pid() {
             #[cfg(unix)]
@@ -240,6 +226,26 @@ impl App {
         pid.release();
 
         self.daemon_active = false;
+        self.daemon_checked = Instant::now();
+    }
+
+    /// Go `service.StopBackgroundDaemon` (`service.go:186-210`): persist
+    /// `auto_extreme_enabled = false`, stop the loop, stop the systemd unit,
+    /// SIGTERM the detached PID and delete the PID file. Used by the modal
+    /// confirm, the `r` hotkey, and the AutoExtreme toggle-off — exactly the
+    /// callers Go pairs with `StopBackgroundDaemon` (`cli.go:365, 614, 647`).
+    pub fn stop_background_daemon(&mut self) {
+        self.config.auto_extreme_enabled = false;
+        let _ = self.config.save(None);
+
+        self.stop_daemon();
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = Command::new("systemctl")
+                .args(["stop", "wattwarden.service"])
+                .status();
+        }
         self.daemon_checked = Instant::now();
     }
 
@@ -325,10 +331,10 @@ impl App {
 
     pub fn confirm_extreme_mode(&mut self) {
         self.confirm_extreme = false;
-        self.stop_daemon();
+        // Go modal confirm (`cli.go:614-617`): full `StopBackgroundDaemon`.
+        self.stop_background_daemon();
         let _ = self.backend.apply_profile(&PowerProfile::Extreme);
         self.config.profile = PowerProfile::Extreme;
-        self.config.auto_extreme_enabled = false;
         let _ = self.config.save(None);
         self.set_toast("EXTREME MODE ACTIVATED");
     }
@@ -341,10 +347,11 @@ impl App {
     /// Restore entry says "RESTORE MODE ACTIVATED" — both run the same restore.
     pub fn restore(&mut self, message: &str) {
         self.confirm_extreme = false;
-        self.stop_daemon();
+        // Go `r` hotkey (`cli.go:646-650`) and menu Restore (`cli.go:410`):
+        // full `StopBackgroundDaemon`, then the restore writes.
+        self.stop_background_daemon();
         let _ = self.backend.apply_profile(&PowerProfile::Normal);
         self.config.profile = PowerProfile::Normal;
-        self.config.auto_extreme_enabled = false;
         let _ = self.config.save(None);
         self.set_toast(message);
     }
@@ -353,10 +360,10 @@ impl App {
         let item = self.items[self.selected].clone();
         match item {
             ActionItem::ProfilePerformance => {
-                self.stop_daemon();
+                // Go (`cli.go:356`): `StopBackgroundDaemon` before the writes.
+                self.stop_background_daemon();
                 let _ = self.backend.apply_profile(&PowerProfile::Performance);
                 self.config.profile = PowerProfile::Performance;
-                self.config.auto_extreme_enabled = false;
                 let _ = self.config.save(None);
                 self.set_toast("PERFORMANCE MODE ACTIVATED");
             }
@@ -366,15 +373,13 @@ impl App {
             ActionItem::ProfileAutoExtreme => {
                 self.refresh_daemon_state();
                 if self.daemon_active {
-                    self.stop_daemon();
-                    let _ = self.backend.apply_profile(&PowerProfile::Normal);
-                    self.config.profile = PowerProfile::Normal;
-                    self.config.auto_extreme_enabled = false;
-                    let _ = self.config.save(None);
+                    // Go toggle-off (`cli.go:364-366`): `StopBackgroundDaemon`,
+                    // no hardware write at all.
+                    self.stop_background_daemon();
                     self.set_toast("AUTO EXTREME DAEMON STOPPED");
                 } else {
-                    let _ = self.backend.apply_profile(&PowerProfile::AutoExtreme);
-                    self.config.profile = PowerProfile::AutoExtreme;
+                    // Go toggle-on (`cli.go:368-369`): only
+                    // `StartBackgroundDaemon`, no `apply_profile` call.
                     self.start_daemon();
                     self.set_toast("AUTO EXTREME RUNNING (BACKGROUND)");
                 }

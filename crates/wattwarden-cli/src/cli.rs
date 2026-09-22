@@ -385,6 +385,62 @@ mod tests {
         assert_eq!(out, expected);
     }
 
+    /// Unknown flags are never a parse error, even as root: Go's `switch` on
+    /// `os.Args[1]` (`main.go`) has no `default` case, so an unknown first arg
+    /// falls through to `SyncInstalledBinary` + the dashboard. The fake runtime
+    /// records the dashboard launch so the fall-through is observable.
+    #[test]
+    fn unknown_flag_falls_through_to_dashboard_as_root() {
+        use std::cell::Cell;
+        struct SpyRuntime {
+            dashboard_launched: Cell<bool>,
+        }
+        impl CliRuntime for SpyRuntime {
+            fn is_root(&self) -> bool {
+                true
+            }
+            fn daemon_active(&self) -> bool {
+                false
+            }
+            fn auto_brightness(&self) -> bool {
+                true
+            }
+            fn set_auto_brightness(&self, _enabled: bool) {}
+            fn sync_installed_binary(&self) {}
+            fn start_background_daemon(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn stop_background_daemon(&self) {}
+            fn install_service(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn uninstall_service(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn run_daemon(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn launch_dashboard(&self) -> Result<(), String> {
+                self.dashboard_launched.set(true);
+                Ok(())
+            }
+        }
+        for flag in ["--frobnicate", "--level", "profile", "bogus-flag-xyz"] {
+            let rt = SpyRuntime {
+                dashboard_launched: Cell::new(false),
+            };
+            let owned: Vec<String> = ["wattwarden", flag].iter().map(|s| s.to_string()).collect();
+            let mut buf: Vec<u8> = Vec::new();
+            let code = run(&owned, &mut buf, &rt);
+            assert_eq!(code, 0, "unknown flag {flag} must not error");
+            assert_eq!(String::from_utf8(buf).unwrap(), "");
+            assert!(
+                rt.dashboard_launched.get(),
+                "unknown flag {flag} must fall through to the dashboard"
+            );
+        }
+    }
+
     #[test]
     fn root_required_messages_per_subcommand() {
         let rt = FakeRuntime::new(false, false, true);
