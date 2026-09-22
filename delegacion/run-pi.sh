@@ -86,6 +86,13 @@ for i in 1 2; do
 done
 
 # ---------- 3) verificación DURA por exit codes ----------
+# Rescatar restos del agente ANTES de verificar: si no, el trabajo queda sin commitear y
+# la ronda da rojo por higiene del repo (paso el 22/09 con config.rs + daemon.rs, 796 lineas).
+if [ -n "$(git status --porcelain)" ]; then
+  git add -u && git commit -q -m "wip(delegacion): restos del agente sin commitear (rescatados por el runner)"
+  log "restos del agente rescatados en $(git rev-parse --short HEAD)"
+fi
+
 log "=== verificación ==="
 cargo fmt >>"$LOG" 2>&1; FMT=$?
 cargo fmt --check >>"$LOG" 2>&1; FMT_C=$?
