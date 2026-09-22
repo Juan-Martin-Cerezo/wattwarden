@@ -1,3 +1,6 @@
+// Only Linux (systemd) and Windows (taskkill) shell out from the dashboard; macOS
+// drives everything through its backend.
+#[cfg(any(target_os = "linux", not(unix)))]
 use std::process::Command;
 use std::time::{Duration, Instant};
 use wattwarden_core::*;
@@ -15,7 +18,6 @@ const DAEMON_STATE_TTL: Duration = Duration::from_secs(1);
 
 const VM_WRITEBACK_MIN_CENTISECS: i64 = 100;
 const VM_WRITEBACK_MAX_CENTISECS: i64 = 6000;
-const DIRTY_WRITEBACK_PATH: &str = "proc/sys/vm/dirty_writeback_centisecs";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionItem {
@@ -411,17 +413,12 @@ impl App {
 
     /// Reads the raw centisecond value Go displays as "VM Writeback (s)".
     fn vm_writeback_centisecs(&self) -> i64 {
-        self.backend
-            .root()
-            .read_i64(DIRTY_WRITEBACK_PATH)
-            .unwrap_or(0)
+        self.backend.tweaks.vm_writeback_centisecs()
     }
 
     fn write_vm_writeback_centisecs(&self, value: i64) {
         let clamped = value.clamp(VM_WRITEBACK_MIN_CENTISECS, VM_WRITEBACK_MAX_CENTISECS);
-        self.backend
-            .root()
-            .write_best_effort(DIRTY_WRITEBACK_PATH, &clamped.to_string());
+        let _ = self.backend.tweaks.set_vm_writeback_centisecs(clamped);
     }
 
     fn toggle_boolean(&mut self, item: &ActionItem) {

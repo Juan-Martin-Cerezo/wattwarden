@@ -444,11 +444,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ActionItem::VmWriteback => {
             // Go `GetVMWriteback()` returns the raw centisecond value, hence the
             // screen shows 500 (not 5) with the legacy "(s)" label.
-            let wb = app
-                .backend
-                .root()
-                .read_i64("proc/sys/vm/dirty_writeback_centisecs")
-                .unwrap_or(0);
+            let wb = app.backend.tweaks.vm_writeback_centisecs();
             ("VM Writeback (s)", format!("[{}]", wb), false)
         }
         ActionItem::ProcessPurge => ("Process Purge", "[EXECUTE]".into(), false),

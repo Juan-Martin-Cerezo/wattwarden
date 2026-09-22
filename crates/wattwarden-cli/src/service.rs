@@ -4,6 +4,7 @@
 //! deliberately differs from `wattwarden-daemon`'s internal helper, so it lives here in
 //! the CLI crate rather than reusing that one.
 
+#[cfg(unix)]
 use std::path::Path;
 use std::process::Command;
 
@@ -172,7 +173,8 @@ pub fn uninstall_service() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+/// Locks down the systemd unit text, so it only exists where that unit does.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

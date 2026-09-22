@@ -100,18 +100,6 @@ impl LinuxRapl {
         Some((min, max))
     }
 
-    /// Discovered `(min, max)` Watts of the PL1 (`long_term`) constraint, if any.
-    pub fn pl1_bounds_watts(&self) -> Option<(u32, u32)> {
-        self.constraint_index(LONG_TERM)
-            .and_then(|i| self.constraint_bounds_watts(i))
-    }
-
-    /// Discovered `(min, max)` Watts of the PL2 (`short_term`) constraint, if any.
-    pub fn pl2_bounds_watts(&self) -> Option<(u32, u32)> {
-        self.constraint_index(SHORT_TERM)
-            .and_then(|i| self.constraint_bounds_watts(i))
-    }
-
     /// Writes `watts` to the constraint called `name`, clamped inside its **own**
     /// discovered range. Returns the value actually written, or `None` when the
     /// constraint (or its range) does not exist — then nothing is written.
@@ -189,6 +177,18 @@ impl Default for LinuxRapl {
 impl RaplController for LinuxRapl {
     fn rapl_bounds(&self) -> Result<(u32, u32)> {
         Ok(self.bounds())
+    }
+
+    /// Discovered `(min, max)` Watts of the PL1 (`long_term`) constraint, if any.
+    fn pl1_bounds_watts(&self) -> Option<(u32, u32)> {
+        self.constraint_index(LONG_TERM)
+            .and_then(|i| self.constraint_bounds_watts(i))
+    }
+
+    /// Discovered `(min, max)` Watts of the PL2 (`short_term`) constraint, if any.
+    fn pl2_bounds_watts(&self) -> Option<(u32, u32)> {
+        self.constraint_index(SHORT_TERM)
+            .and_then(|i| self.constraint_bounds_watts(i))
     }
 
     fn pl1_watts(&self) -> Result<u32> {

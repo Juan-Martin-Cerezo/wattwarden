@@ -50,6 +50,19 @@ pub trait CpuGovernor: Send + Sync {
     /// Minimum and maximum hardware frequency bounds in MHz
     fn freq_bounds(&self) -> Result<(u32, u32)>;
 
+    /// `(min, max)` MHz of the **immutable** hardware frequency range, or `None`
+    /// when the platform cannot discover one.
+    ///
+    /// Only nodes this program never writes may define it: discovering the range
+    /// from mutable state (the very limits [`CpuGovernor::set_freq_limit`] writes)
+    /// makes it inflate on every pass — the "ratchet". `None` means
+    /// "undiscoverable" and callers must then **not write** a frequency at all.
+    /// Platforms with no frequency control (macOS, Windows) have no range and keep
+    /// this default.
+    fn discovered_freq_bounds(&self) -> Option<(u32, u32)> {
+        None
+    }
+
     /// Current frequency scaling limit in MHz
     fn freq_limit(&self) -> Result<u32>;
 
@@ -73,6 +86,21 @@ pub trait CpuGovernor: Send + Sync {
 pub trait RaplController: Send + Sync {
     /// Long-term (PL1) and Short-term (PL2) power limit bounds in Watts
     fn rapl_bounds(&self) -> Result<(u32, u32)>;
+
+    /// Discovered `(min, max)` Watts of the PL1 (`long_term`) constraint, or `None`
+    /// when the firmware exposes no range for it.
+    ///
+    /// `None` forbids writing PL1: no absolute fallback (the legacy `5..115 W`) may
+    /// ever be invented for a write.
+    fn pl1_bounds_watts(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Discovered `(min, max)` Watts of the PL2 (`short_term`) constraint, or `None`
+    /// when the firmware exposes no range for it. `None` forbids writing PL2.
+    fn pl2_bounds_watts(&self) -> Option<(u32, u32)> {
+        None
+    }
 
     /// Get PL1 long term power limit in Watts
     fn pl1_watts(&self) -> Result<u32>;
@@ -132,6 +160,17 @@ pub trait GpuController: Send + Sync {
     /// Hardware minimum and maximum frequency boundaries in MHz
     fn gpu_bounds(&self) -> Result<(u32, u32)>;
 
+    /// `(min, max)` MHz of the **immutable** GPU frequency range, or `None` when the
+    /// platform exposes none.
+    ///
+    /// Same rule as [`CpuGovernor::discovered_freq_bounds`]: the nodes
+    /// [`GpuController::set_gpu_freq`] writes must never define the range, and
+    /// `None` forbids any write (the legacy `300..1100 MHz` fallback is for display
+    /// only).
+    fn discovered_gpu_bounds(&self) -> Option<(u32, u32)> {
+        None
+    }
+
     /// Current maximum GPU frequency in MHz
     fn gpu_freq(&self) -> Result<u32>;
 
@@ -188,6 +227,22 @@ pub trait SystemTweaksController: Send + Sync {
 
     /// Enable or disable USB/PCI runtime autosuspend
     fn set_autosuspend(&self, enabled: bool) -> Result<()>;
+
+    /// Raw `dirty_writeback_centisecs` value (Go `GetVMWriteback`): the unit the
+    /// dashboard displays and adjusts one centisecond at a time, which
+    /// [`SystemTweaksController::vm_writeback_seconds`] cannot express.
+    ///
+    /// Defaults to the second-resolution value scaled up, which is exact on the
+    /// platforms where the setting is a constant (Go returns `500` on macOS and
+    /// Windows). Linux overrides it to read the real proc node.
+    fn vm_writeback_centisecs(&self) -> i64 {
+        self.vm_writeback_seconds().map_or(0, |s| s as i64 * 100)
+    }
+
+    /// Best-effort write of the raw centisecond value (Go `SetVMWriteback`).
+    fn set_vm_writeback_centisecs(&self, centisecs: i64) -> Result<()> {
+        self.set_vm_writeback_seconds((centisecs.max(0) / 100) as u32)
+    }
 
     /// Check whether kernel NMI Watchdog is enabled
     fn nmi_watchdog(&self) -> Result<bool>;

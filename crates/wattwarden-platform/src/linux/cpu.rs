@@ -80,50 +80,6 @@ impl LinuxCpuGovernor {
 }
 
 impl LinuxCpuGovernor {
-    /// `(min, max)` MHz discovered from the **immutable** `cpuinfo_{min,max}_freq`
-    /// nodes of every known CPU: `min = min(min_i)`, `max = max(max_i)`.
-    ///
-    /// Only `cpuinfo_*` may be used as a discovery source: `scaling_min_freq`,
-    /// `scaling_max_freq` and `scaling_available_frequencies` are **mutable state**
-    /// (the daemon itself writes the first two), so reading them back makes the range
-    /// self-inflate and never come down — the ratchet. They are for writing only.
-    ///
-    /// `None` (never write a frequency) when no CPU exposes a usable range: missing,
-    /// zero, inverted (`max < min`) or degenerate (`min == max`, nothing to scale
-    /// inside). [`CpuGovernor::freq_bounds`] keeps the legacy `400/1600` fallback for
-    /// display, but every write is gated on this discovered range.
-    pub fn discovered_freq_bounds(&self) -> Option<(u32, u32)> {
-        let mut min_khz: Option<i64> = None;
-        let mut max_khz: Option<i64> = None;
-        for id in self.cpu_ids() {
-            let cpufreq = format!("{}/cpufreq", self.cpu_rel(id));
-            let (Some(lo), Some(hi)) = (
-                self.root.read_i64(&format!("{cpufreq}/cpuinfo_min_freq")),
-                self.root.read_i64(&format!("{cpufreq}/cpuinfo_max_freq")),
-            ) else {
-                continue; // this CPU does not expose immutable cpufreq info
-            };
-            if lo <= 0 || hi <= 0 || hi < lo {
-                continue;
-            }
-            min_khz = Some(min_khz.map_or(lo, |m| m.min(lo)));
-            max_khz = Some(max_khz.map_or(hi, |m| m.max(hi)));
-        }
-
-        let (Some(min_khz), Some(max_khz)) = (min_khz, max_khz) else {
-            debug!("CPU: no cpuinfo_min/max_freq exposed by any CPU; freq range undiscoverable");
-            return None;
-        };
-
-        let min_mhz = (min_khz / 1000) as u32;
-        let max_mhz = (max_khz / 1000) as u32;
-        if max_mhz <= min_mhz {
-            debug!("CPU: degenerate cpuinfo range ({min_mhz}..{max_mhz} MHz); freq undiscoverable");
-            return None;
-        }
-        Some((min_mhz, max_mhz))
-    }
-
     /// The EPP values the hardware advertises (`energy_performance_available_preferences`).
     fn available_epp(&self) -> Vec<String> {
         self.root
@@ -231,6 +187,50 @@ impl CpuGovernor for LinuxCpuGovernor {
         Ok(self
             .discovered_freq_bounds()
             .unwrap_or((FALLBACK_FREQ_MIN_MHZ, FALLBACK_FREQ_MAX_MHZ)))
+    }
+
+    /// `(min, max)` MHz discovered from the **immutable** `cpuinfo_{min,max}_freq`
+    /// nodes of every known CPU: `min = min(min_i)`, `max = max(max_i)`.
+    ///
+    /// Only `cpuinfo_*` may be used as a discovery source: `scaling_min_freq`,
+    /// `scaling_max_freq` and `scaling_available_frequencies` are **mutable state**
+    /// (the daemon itself writes the first two), so reading them back makes the range
+    /// self-inflate and never come down — the ratchet. They are for writing only.
+    ///
+    /// `None` (never write a frequency) when no CPU exposes a usable range: missing,
+    /// zero, inverted (`max < min`) or degenerate (`min == max`, nothing to scale
+    /// inside). [`CpuGovernor::freq_bounds`] keeps the legacy `400/1600` fallback for
+    /// display, but every write is gated on this discovered range.
+    fn discovered_freq_bounds(&self) -> Option<(u32, u32)> {
+        let mut min_khz: Option<i64> = None;
+        let mut max_khz: Option<i64> = None;
+        for id in self.cpu_ids() {
+            let cpufreq = format!("{}/cpufreq", self.cpu_rel(id));
+            let (Some(lo), Some(hi)) = (
+                self.root.read_i64(&format!("{cpufreq}/cpuinfo_min_freq")),
+                self.root.read_i64(&format!("{cpufreq}/cpuinfo_max_freq")),
+            ) else {
+                continue; // this CPU does not expose immutable cpufreq info
+            };
+            if lo <= 0 || hi <= 0 || hi < lo {
+                continue;
+            }
+            min_khz = Some(min_khz.map_or(lo, |m| m.min(lo)));
+            max_khz = Some(max_khz.map_or(hi, |m| m.max(hi)));
+        }
+
+        let (Some(min_khz), Some(max_khz)) = (min_khz, max_khz) else {
+            debug!("CPU: no cpuinfo_min/max_freq exposed by any CPU; freq range undiscoverable");
+            return None;
+        };
+
+        let min_mhz = (min_khz / 1000) as u32;
+        let max_mhz = (max_khz / 1000) as u32;
+        if max_mhz <= min_mhz {
+            debug!("CPU: degenerate cpuinfo range ({min_mhz}..{max_mhz} MHz); freq undiscoverable");
+            return None;
+        }
+        Some((min_mhz, max_mhz))
     }
 
     fn freq_limit(&self) -> Result<u32> {

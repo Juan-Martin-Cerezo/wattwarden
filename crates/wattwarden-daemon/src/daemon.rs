@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
 use wattwarden_core::*;
-use wattwarden_platform::linux::LinuxBackend;
+use wattwarden_platform::PlatformBackend;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogicStepResult {
@@ -81,14 +81,14 @@ async fn wait_for_shutdown() {
 }
 
 pub struct DaemonRunner {
-    backend: Arc<LinuxBackend>,
+    backend: Arc<PlatformBackend>,
     config_path: Option<PathBuf>,
     pid_mgr: PidManager,
     last_applied_brightness: Arc<AtomicI16>,
 }
 
 impl DaemonRunner {
-    pub fn new(backend: LinuxBackend, config: Config) -> Self {
+    pub fn new(backend: PlatformBackend, config: Config) -> Self {
         let _ = config;
         Self {
             backend: Arc::new(backend),
@@ -99,7 +99,7 @@ impl DaemonRunner {
     }
 
     pub fn with_paths(
-        backend: LinuxBackend,
+        backend: PlatformBackend,
         config_path: Option<PathBuf>,
         pid_path: Option<PathBuf>,
     ) -> Self {
@@ -115,7 +115,7 @@ impl DaemonRunner {
         }
     }
 
-    pub fn backend(&self) -> &LinuxBackend {
+    pub fn backend(&self) -> &PlatformBackend {
         &self.backend
     }
 
@@ -234,12 +234,10 @@ impl DaemonRunner {
         }
 
         // Adaptive ladder, plugged in or not — Go backend_linux.go:937-991 shape.
-        let load_str = self.backend.root().read("proc/loadavg");
-        let load: f64 = load_str
-            .split_whitespace()
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0);
+        // The load comes from whatever cheap source the platform has (procfs,
+        // `sysctl`, `typeperf`); a platform without one reports 0.0 and the ladder
+        // stays on its idle step.
+        let load = self.backend.load_average();
         let power_level = (load / ncpu as f64).min(1.0);
         // Discrete quantization into 4 steps: 0, 0.333, 0.667, 1.0
         let discrete_power = (power_level * 3.0).round() / 3.0;
@@ -429,7 +427,11 @@ impl DaemonRunner {
     }
 }
 
-#[cfg(test)]
+/// The ladder is exercised against fabricated Linux sysfs trees (fake `/proc/loadavg`,
+/// cpufreq, RAPL and DRM nodes), so these tests only exist where that backend does.
+/// The platform-independent guarantee — no panic and no invented value where nothing
+/// is discoverable — is covered by `non_linux_tests` below.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::fs;
@@ -596,7 +598,7 @@ mod tests {
     #[test]
     fn test_a_battery_adaptive_quantized_steps_and_40_percent_ceiling() {
         let root = fake_intel_laptop("test_a");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::High,
@@ -820,7 +822,7 @@ mod tests {
 
         // The plugged-in step now runs the ladder: assert it writes the ladder
         // values for the simulated idle load, NOT the old Go 115 W restore.
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         assert!(backend.battery.is_charging().unwrap());
         write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
         let config = Config {
@@ -864,7 +866,7 @@ mod tests {
     #[test]
     fn test_f_disabled_mode_touches_nothing() {
         let root = fake_intel_laptop("test_f");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: false,
             ..Default::default()
@@ -894,7 +896,7 @@ mod tests {
     #[test]
     fn test_g_ladder_same_plugged_and_unplugged() {
         let root = fake_intel_laptop("test_g");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::High,
@@ -945,7 +947,7 @@ mod tests {
         write(&root, "sys/class/power_supply/AC/online", "1\n");
         write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
 
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         assert!(backend.battery.is_charging().unwrap());
         let config = Config {
             auto_extreme_enabled: true,
@@ -984,7 +986,7 @@ mod tests {
     #[test]
     fn test_i_saving_peripherals_only_on_battery() {
         let root = fake_intel_laptop("test_i");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::High,
@@ -1185,7 +1187,7 @@ mod tests {
                     "sys/class/power_supply/AC/online",
                     &format!("{ac}\n"),
                 );
-                let backend = LinuxBackend::with_root(root.clone()).unwrap();
+                let backend = PlatformBackend::with_root(root.clone()).unwrap();
                 let config = Config {
                     auto_extreme_enabled: true,
                     auto_extreme_level: level,
@@ -1257,7 +1259,7 @@ mod tests {
     #[test]
     fn test_c_turbo_only_on_step_1_and_epp_power_all_steps() {
         let root = fake_intel_laptop("test_c");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::High,
@@ -1317,7 +1319,7 @@ mod tests {
     #[test]
     fn test_d_high_level_preserves_go_behavior() {
         let root = fake_intel_laptop("test_d");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::High,
@@ -1399,7 +1401,7 @@ mod tests {
     #[test]
     fn test_medium_and_low_parameterized_levels() {
         let root = fake_intel_laptop("test_levels");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
 
         // Medium level: ceiling 0.7
         // CPU: 400 + 3100*0.7 = 400 + 2170 = 2570.
@@ -1409,7 +1411,7 @@ mod tests {
             auto_extreme_level: AutoExtremeLevel::Medium,
             ..Default::default()
         };
-        let backend_med = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend_med = PlatformBackend::with_root(root.clone()).unwrap();
         let runner_med = DaemonRunner::with_paths(backend_med, None, None);
 
         write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
@@ -1465,7 +1467,7 @@ mod tests {
     #[test]
     fn test_brightness_logic_matches_go_and_level_deltas() {
         let root = fake_intel_laptop("test_bl");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
 
         let tmp_cfg = root.path("config.json");
         let mut cfg = Config {
@@ -1521,7 +1523,7 @@ mod tests {
     #[test]
     fn test_brightness_never_forces_100_when_plugged_in() {
         let root = fake_intel_laptop("test_bl_ac");
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
 
         let tmp_cfg = root.path("config.json");
         let cfg = Config {
@@ -1585,7 +1587,7 @@ mod tests {
     }
 
     fn optin_runner(root: &SysfsRoot, config: &Config) -> DaemonRunner {
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let tmp_cfg = root.path("config.json");
         config.save(Some(&tmp_cfg)).unwrap();
         DaemonRunner::with_paths(backend, Some(tmp_cfg), None)
@@ -1886,7 +1888,7 @@ mod tests {
 
         for (tag, cpus, min_khz, max_khz, pl1_max_uw) in cases {
             let root = fake_machine(tag, cpus, min_khz, max_khz, pl1_max_uw);
-            let backend = LinuxBackend::with_root(root.clone()).unwrap();
+            let backend = PlatformBackend::with_root(root.clone()).unwrap();
             let config = Config {
                 auto_extreme_enabled: true,
                 auto_extreme_level: AutoExtremeLevel::High,
@@ -1971,7 +1973,7 @@ mod tests {
             );
         }
 
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         assert_eq!(backend.cpu.discovered_freq_bounds(), Some((400, 1600)));
         let config = Config {
             auto_extreme_enabled: true,
@@ -2051,7 +2053,7 @@ mod tests {
         let root = fake_machine("norange", 4, 400_000, 1_600_000, 15_000_000);
         fs::remove_file(root.path(&format!("{RAPL}/constraint_0_max_power_uw"))).unwrap();
 
-        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: true,
             ..Default::default()
@@ -2067,5 +2069,48 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root.root());
+    }
+}
+
+/// The adaptive ladder is shared with every platform, so the one guarantee that must
+/// hold there too is that a machine with no discoverable range gets no panic and no
+/// invented target. macOS and Windows expose neither an immutable CPU frequency range
+/// nor RAPL/GPU controls, so every value the ladder would write stays at zero.
+#[cfg(all(test, not(target_os = "linux")))]
+mod non_linux_tests {
+    use super::*;
+
+    #[test]
+    fn ladder_degrades_gracefully_without_discoverable_ranges() {
+        let backend = PlatformBackend::new().expect("every non-Linux backend must boot");
+        // A config path that does not exist keeps the run on `Config::default()`
+        // instead of whatever the machine running the tests has saved.
+        let config_path = std::env::temp_dir()
+            .join(format!("ww_daemon_cfg_{}", std::process::id()))
+            .join("config.json");
+        let runner = DaemonRunner::with_paths(backend, Some(config_path), None);
+
+        // Disabled (the default) the ladder touches nothing at all.
+        let disabled = Config::default();
+        assert!(!disabled.auto_extreme_enabled);
+        let idle = runner.apply_logic_step(&disabled);
+        assert!(!idle.applied);
+        for target in [idle.target_freq, idle.target_gpu, idle.target_rapl] {
+            assert_eq!(target, 0);
+        }
+        assert_eq!(runner.apply_brightness_step(Some("kitty")), None);
+
+        // Enabled, the ladder runs and reports zero targets: there is no range to
+        // scale inside, so the platform setters are the ones that do nothing.
+        let enabled = Config {
+            auto_extreme_enabled: true,
+            ..Default::default()
+        };
+        let res = runner.apply_logic_step(&enabled);
+        assert!(res.applied);
+        assert_eq!(res.target_freq, 0);
+        assert_eq!(res.target_gpu, 0);
+        assert_eq!(res.target_rapl, 0);
+        assert_eq!(runner.apply_brightness_step(Some("firefox")), None);
     }
 }

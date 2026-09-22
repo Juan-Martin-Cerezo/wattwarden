@@ -78,6 +78,18 @@ impl LinuxBackend {
         self.hyprland.root()
     }
 
+    /// 1-minute system load, in the units `/proc/loadavg` reports: the shared
+    /// adaptive ladder normalizes it by the CPU count. `0.0` (the idle step) when the
+    /// node is missing or unparsable, exactly like the Go `readSys(..)` + `Atoi` pair.
+    pub fn load_average(&self) -> f64 {
+        self.root()
+            .read("proc/loadavg")
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0)
+    }
+
     pub fn capabilities(&self) -> HardwareCapabilities {
         HardwareCapabilities {
             has_battery: self.battery.has_battery(),

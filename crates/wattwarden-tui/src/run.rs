@@ -7,6 +7,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::stdout;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use wattwarden_core::*;
@@ -16,33 +17,38 @@ use wattwarden_core::*;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Set from the SIGINT/SIGTERM/SIGHUP handler so the loop can unwind and restore the
-/// terminal instead of leaving it in raw mode.
+/// terminal instead of leaving it in raw mode. Windows has no asynchronous signal for
+/// this — Ctrl-C arrives there as a key event, which `run_loop` already handles — so
+/// the flag and its handler only exist on Unix.
+#[cfg(unix)]
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(unix)]
 extern "C" fn request_quit(_signal: i32) {
     // Async-signal-safe: just flip a flag; the main loop does the cleanup.
     QUIT_REQUESTED.store(true, Ordering::SeqCst);
 }
 
+/// Arms the shutdown flag and installs the signal handlers that raise it.
+#[cfg(unix)]
 fn install_signal_handlers() {
-    #[cfg(unix)]
-    {
-        use nix::sys::signal::{signal, SigHandler, Signal};
-        // SAFETY: the handler only performs an atomic store, which is async-signal-safe.
-        unsafe {
-            let _ = signal(Signal::SIGINT, SigHandler::Handler(request_quit));
-            let _ = signal(Signal::SIGTERM, SigHandler::Handler(request_quit));
-            let _ = signal(Signal::SIGHUP, SigHandler::Handler(request_quit));
-        }
+    use nix::sys::signal::{signal, SigHandler, Signal};
+    QUIT_REQUESTED.store(false, Ordering::SeqCst);
+    // SAFETY: the handler only performs an atomic store, which is async-signal-safe.
+    unsafe {
+        let _ = signal(Signal::SIGINT, SigHandler::Handler(request_quit));
+        let _ = signal(Signal::SIGTERM, SigHandler::Handler(request_quit));
+        let _ = signal(Signal::SIGHUP, SigHandler::Handler(request_quit));
     }
 }
 
+#[cfg(unix)]
 fn quit_requested() -> bool {
     QUIT_REQUESTED.load(Ordering::SeqCst)
 }
 
 pub fn run_tui(mut app: App) -> Result<()> {
-    QUIT_REQUESTED.store(false, Ordering::SeqCst);
+    #[cfg(unix)]
     install_signal_handlers();
 
     enable_raw_mode().map_err(WattWardenError::GeneralIo)?;
@@ -63,6 +69,7 @@ pub fn run_tui(mut app: App) -> Result<()> {
 
 fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     while !app.should_quit {
+        #[cfg(unix)]
         if quit_requested() {
             app.should_quit = true;
             break;

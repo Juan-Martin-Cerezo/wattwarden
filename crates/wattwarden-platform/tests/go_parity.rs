@@ -3,6 +3,11 @@
 //! Estos tests son el criterio de aceptación de `PARITY.md` §5: afirman los valores
 //! EXACTOS que escribe el binario Go de `master`, sin root, sin hardware real y sin
 //! binarios externos. Todo pasa por `WATTWARDEN_SYSFS_ROOT` vía `SysfsRoot::new(dir)`.
+//!
+//! Sólo Linux: el sysfs falso y los controladores `wattwarden_platform::linux::*` que
+//! afirman no existen en los otros backends. Lo agnóstico de plataforma vive en los
+//! unit tests de cada crate.
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use wattwarden_core::{

@@ -4,7 +4,11 @@ mod service;
 
 use cli::{run, CliRuntime};
 use std::io::Write;
+#[cfg(target_os = "linux")]
 use std::path::Path;
+// Only Linux (systemd) and Windows (taskkill) shell out from the CLI; macOS drives
+// everything through its backend.
+#[cfg(any(target_os = "linux", not(unix)))]
 use std::process::Command;
 use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
 use wattwarden_core::Config;

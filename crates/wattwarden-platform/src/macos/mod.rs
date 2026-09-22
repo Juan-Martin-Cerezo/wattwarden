@@ -328,6 +328,24 @@ impl MacOsBackend {
         })
     }
 
+    /// 1-minute load average from `sysctl -n vm.loadavg`, in the units Linux
+    /// `/proc/loadavg` reports so the shared adaptive ladder can normalize it by the
+    /// CPU count (Go `getMacLoad()` divides by `NumCPU` and its caller uses that
+    /// directly, which is the same power level). `0.0` — the idle step — when the
+    /// query fails, exactly like Go.
+    pub fn load_average(&self) -> f64 {
+        if let Ok(output) = Command::new("sysctl").args(["-n", "vm.loadavg"]).output() {
+            let s = String::from_utf8_lossy(&output.stdout);
+            let cleaned = s.trim().trim_matches(['{', '}']).trim();
+            if let Some(first) = cleaned.split_whitespace().next() {
+                if let Ok(value) = first.parse::<f64>() {
+                    return value;
+                }
+            }
+        }
+        0.0
+    }
+
     pub fn capabilities(&self) -> HardwareCapabilities {
         HardwareCapabilities {
             has_battery: !self.battery.is_stationary(),

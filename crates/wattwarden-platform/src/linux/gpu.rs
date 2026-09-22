@@ -87,7 +87,9 @@ impl LinuxGpu {
                 .write_best_effort_path(&card.join(leaf), &value.to_string());
         }
     }
+}
 
+impl GpuController for LinuxGpu {
     /// `(min, max)` MHz discovered from the card's **immutable** hardware info:
     /// `gt_RPn_freq_mhz` and `gt_RP0_freq_mhz`.
     ///
@@ -99,7 +101,7 @@ impl LinuxGpu {
     /// `None` when there is no card, either immutable bound is missing, or the range is
     /// degenerate (`min == max`): callers must then **not write**.
     /// [`GpuController::gpu_bounds`] keeps the legacy `300/1100` fallback for display.
-    pub fn discovered_gpu_bounds(&self) -> Option<(u32, u32)> {
+    fn discovered_gpu_bounds(&self) -> Option<(u32, u32)> {
         self.card.as_ref()?;
         let min = self.card_read("gt_RPn_freq_mhz")?;
         let max = self.card_read("gt_RP0_freq_mhz")?;
@@ -109,9 +111,7 @@ impl LinuxGpu {
         }
         Some((min, max))
     }
-}
 
-impl GpuController for LinuxGpu {
     fn gpu_bounds(&self) -> Result<(u32, u32)> {
         if self.card.is_none() {
             return Ok((FALLBACK_MIN_MHZ, FALLBACK_MAX_MHZ));

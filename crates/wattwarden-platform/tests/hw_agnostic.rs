@@ -12,6 +12,10 @@
 //! The rule under test: **every written value is derived from the discovered
 //! hardware**, scales with it, and never lands above the ceiling the hardware
 //! declares. There are no absolute fallbacks used for a write.
+//!
+//! Only Linux: the fake sysfs trees and the `wattwarden_platform::linux::*`
+//! controllers under test do not exist on the other backends.
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use wattwarden_core::{CpuGovernor, DisplayManager, GpuController, RaplController};

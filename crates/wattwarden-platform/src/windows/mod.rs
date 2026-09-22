@@ -305,6 +305,34 @@ impl WindowsBackend {
         })
     }
 
+    /// Approximate CPU load, expressed in the units Linux `/proc/loadavg` reports so
+    /// the shared adaptive ladder can normalize it by the CPU count.
+    ///
+    /// Windows has no load average, so Go `getWinLoad()` measures
+    /// `\Processor Information(_Total)\% Processor Time` with `typeperf` and returns
+    /// the 0.0..1.0 fraction its caller uses directly; multiplying that fraction by
+    /// the CPU count makes the ladder's `load / num_cpus` reproduce the exact same
+    /// power level. `0.0` — the idle step — when `typeperf` is unavailable or its
+    /// output is unparsable, exactly like Go.
+    pub fn load_average(&self) -> f64 {
+        if let Ok(output) = Command::new("typeperf")
+            .args([
+                r"\Processor Information(_Total)\% Processor Time",
+                "-sc",
+                "1",
+            ])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&output.stdout);
+            if let Some(value) = s.lines().nth(2).and_then(|line| line.split(',').nth(1)) {
+                if let Ok(percent) = value.trim().trim_matches('"').parse::<f64>() {
+                    return percent / 100.0 * self.cpu.num_cpus() as f64;
+                }
+            }
+        }
+        0.0
+    }
+
     pub fn capabilities(&self) -> HardwareCapabilities {
         HardwareCapabilities {
             has_battery: !self.battery.is_stationary(),

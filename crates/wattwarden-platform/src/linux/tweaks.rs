@@ -180,6 +180,18 @@ impl SystemTweaksController for LinuxSystemTweaks {
         Ok(())
     }
 
+    /// Go `GetVMWriteback` returns the raw centisecond value, which the dashboard
+    /// shows and steps one centisecond at a time; the base trait's second-resolution
+    /// scaling would round those steps away on the one platform that exposes them.
+    fn vm_writeback_centisecs(&self) -> i64 {
+        self.root.read_i64(DIRTY_WRITEBACK).unwrap_or(0)
+    }
+
+    fn set_vm_writeback_centisecs(&self, centisecs: i64) -> Result<()> {
+        self.write_node(DIRTY_WRITEBACK, &centisecs.to_string());
+        Ok(())
+    }
+
     fn process_purge(&self) -> Result<()> {
         self.write_node(DROP_CACHES, "3");
         Ok(())

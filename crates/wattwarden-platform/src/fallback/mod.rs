@@ -250,6 +250,12 @@ impl FallbackBackend {
         })
     }
 
+    /// No portable load average exists for an unrecognised platform, so the shared
+    /// ladder stays on its idle step instead of guessing at one.
+    pub fn load_average(&self) -> f64 {
+        0.0
+    }
+
     pub fn capabilities(&self) -> HardwareCapabilities {
         HardwareCapabilities {
             has_battery: false,
