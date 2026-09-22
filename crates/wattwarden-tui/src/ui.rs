@@ -287,21 +287,21 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ActionItem::Header(_) => ("", "".into(), false),
         ActionItem::ProfilePerformance => (
             "⚡ Performance Mode",
-            if app.config.profile == PowerProfile::Performance {
+            if app.config.profile == Some(PowerProfile::Performance) {
                 "[ACTIVE]".into()
             } else {
                 "[EXECUTE]".into()
             },
-            app.config.profile == PowerProfile::Performance,
+            app.config.profile == Some(PowerProfile::Performance),
         ),
         ActionItem::ProfileExtreme => (
             "🔋 Extreme Mode",
-            if app.config.profile == PowerProfile::Extreme {
+            if app.config.profile == Some(PowerProfile::Extreme) {
                 "[ACTIVE]".into()
             } else {
                 "[EXECUTE]".into()
             },
-            app.config.profile == PowerProfile::Extreme,
+            app.config.profile == Some(PowerProfile::Extreme),
         ),
         ActionItem::ProfileAutoExtreme => (
             "⚡ Auto Extreme Mode",

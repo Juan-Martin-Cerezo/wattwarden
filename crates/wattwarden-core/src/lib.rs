@@ -79,11 +79,12 @@ mod tests {
         let cfg_path = tmp_dir.join("test_config.json");
 
         let mut cfg = Config::default();
-        assert_eq!(cfg.profile, PowerProfile::Normal);
-        assert!(cfg.auto_brightness);
-        assert_eq!(cfg.battery_charge_limit, Some(80));
+        assert_eq!(cfg.profile, None);
+        assert!(!cfg.auto_brightness);
+        assert!(!cfg.auto_extreme_enabled);
+        assert_eq!(cfg.battery_charge_limit, None);
 
-        cfg.profile = PowerProfile::Extreme;
+        cfg.profile = Some(PowerProfile::Extreme);
         cfg.auto_brightness = false;
         cfg.terminal_brightness = 30;
         cfg.gui_brightness = 70;
@@ -92,7 +93,7 @@ mod tests {
         cfg.save(Some(&cfg_path)).expect("save should succeed");
 
         let loaded = Config::load_or_default(Some(&cfg_path));
-        assert_eq!(loaded.profile, PowerProfile::Extreme);
+        assert_eq!(loaded.profile, Some(PowerProfile::Extreme));
         assert!(!loaded.auto_brightness);
         assert_eq!(loaded.terminal_brightness, 30);
         assert_eq!(loaded.gui_brightness, 70);

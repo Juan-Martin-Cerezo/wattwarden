@@ -327,16 +327,18 @@ impl DaemonRunner {
         self.apply_logic_step(&config);
     }
 
-    pub async fn run(self) -> Result<()> {
-        self.pid_mgr.acquire()?;
-        info!(
-            "WattWarden daemon started successfully with PID {}",
-            std::process::id()
-        );
+    /// Arranque opt-in puro (Juan): el daemon solo escribe lo que el usuario
+    /// habilitó explícitamente. Sin ningún ajuste, esto no toca nada: ni
+    /// perfil, ni umbral de carga, ni nada más.
+    pub fn apply_boot_settings(&self, config: &Config) {
+        if let Some(profile) = &config.profile {
+            if let Err(e) = self.backend.apply_profile(profile) {
+                warn!("Failed to apply power profile {profile}: {e}");
+            } else {
+                info!("Power profile applied: {profile}");
+            }
+        }
 
-        let config = self.config();
-
-        // Apply saved charge limit threshold if configured
         if let Some(limit) = config.battery_charge_limit {
             if self.backend.threshold.supports_threshold() {
                 if let Err(e) = self.backend.threshold.set_charge_threshold(limit) {
@@ -346,6 +348,20 @@ impl DaemonRunner {
                 }
             }
         }
+    }
+
+    pub async fn run(self) -> Result<()> {
+        self.pid_mgr.acquire()?;
+        info!(
+            "WattWarden daemon started successfully with PID {}",
+            std::process::id()
+        );
+
+        let config = self.config();
+
+        // Opt-in puro: solo se escribe lo que el usuario habilitó explícitamente
+        // (perfil y/o umbral de carga). Sin ajustes, no se toca nada.
+        self.apply_boot_settings(&config);
 
         // Run immediately once before the loop, exactly as Go does
         self.apply_logic();
@@ -1466,6 +1482,236 @@ mod tests {
             assert_eq!(read(&root, &format!("{BL}/brightness")), "200");
             assert_ne!(read(&root, &format!("{BL}/brightness")), "1000");
         }
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    fn snapshot_sysfs(root: &SysfsRoot) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut out = std::collections::BTreeMap::new();
+        let base = root.root();
+        for entry in walkdir_files(base) {
+            if let Ok(bytes) = fs::read(&entry) {
+                out.insert(entry, bytes);
+            }
+        }
+        out
+    }
+
+    fn walkdir_files(base: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut dirs = vec![base.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    // El config.json del runner vive dentro del root falso: no es
+                    // hardware, se excluye del snapshot.
+                    dirs.push(p);
+                } else if p.file_name().and_then(|n| n.to_str()) != Some("config.json") {
+                    files.push(p);
+                }
+            }
+        }
+        files
+    }
+
+    fn optin_runner(root: &SysfsRoot, config: &Config) -> DaemonRunner {
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let tmp_cfg = root.path("config.json");
+        config.save(Some(&tmp_cfg)).unwrap();
+        DaemonRunner::with_paths(backend, Some(tmp_cfg), None)
+    }
+
+    /// Test estrella (Juan, opt-in puro): config por defecto, recién creada,
+    /// sin tocar nada -> el daemon es de SOLO LECTURA. Ningún archivo de
+    /// hardware cambia y no aparece ninguno nuevo.
+    #[test]
+    fn test_optin_default_config_writes_nothing() {
+        let root = fake_intel_laptop("optin_star");
+        // Umbrales falsos presentes pero sin valor pedido: no se tocan.
+        write(
+            &root,
+            "sys/class/power_supply/BAT0/charge_control_end_threshold",
+            "80\n",
+        );
+        write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
+
+        let config = Config::default();
+        assert!(!config.auto_extreme_enabled);
+        assert!(!config.auto_brightness);
+        assert_eq!(config.profile, None);
+        assert_eq!(config.battery_charge_limit, None);
+
+        let runner = optin_runner(&root, &config);
+        let before = snapshot_sysfs(&root);
+
+        runner.apply_boot_settings(&runner.config());
+        let res = runner.apply_logic_step(&runner.config());
+        assert!(!res.applied);
+        assert_eq!(runner.apply_brightness_step(Some("firefox")), None);
+
+        let after = snapshot_sysfs(&root);
+        assert_eq!(before, after, "default config must not write anything");
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// `profile: Some(p)` habilita solo sus escrituras (perfil Extreme).
+    #[test]
+    fn test_optin_profile_only() {
+        let root = fake_intel_laptop("optin_profile");
+        // Carga alta: si la escalera corriera escribiría valores altos; el
+        // perfil Extreme escribe mínimos. Así se distingue quién escribió.
+        write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
+        let config = Config {
+            profile: Some(PowerProfile::Extreme),
+            ..Default::default()
+        };
+        let runner = optin_runner(&root, &config);
+        let before = snapshot_sysfs(&root);
+
+        runner.apply_boot_settings(&runner.config());
+        let res = runner.apply_logic_step(&runner.config());
+        assert!(!res.applied);
+        assert_eq!(runner.apply_brightness_step(Some("firefox")), None);
+
+        let after = snapshot_sysfs(&root);
+        let changed: Vec<_> = before
+            .iter()
+            .filter(|(p, b)| after.get(*p) != Some(*b))
+            .map(|(p, _)| {
+                p.strip_prefix(root.root())
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(
+            !changed.is_empty(),
+            "applying an explicit profile must write something"
+        );
+        // El perfil Extreme escribe mínimos y su propio brillo (10 %): la
+        // escalera está apagada (a carga 8.0 habría escrito valores altos) y
+        // el lazo de brillo también (el 10 % es del perfil, no del lazo).
+        assert_eq!(
+            read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+            "400000"
+        );
+        assert_eq!(read(&root, &format!("{DRM}/card0/gt_max_freq_mhz")), "300");
+        assert_eq!(read(&root, &format!("{BL}/brightness")), "100");
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// `auto_extreme_enabled` habilita solo la escalera adaptativa.
+    #[test]
+    fn test_optin_auto_extreme_only() {
+        let root = fake_intel_laptop("optin_ladder");
+        write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
+        let config = Config {
+            auto_extreme_enabled: true,
+            ..Default::default()
+        };
+        let runner = optin_runner(&root, &config);
+
+        let res = runner.apply_logic_step(&runner.config());
+        assert!(res.applied);
+        assert_ne!(
+            read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+            "3500000"
+        );
+        assert_eq!(runner.apply_brightness_step(Some("firefox")), None);
+        assert_eq!(read(&root, &format!("{BL}/brightness")), "500");
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// `auto_brightness` habilita solo el lazo de brillo.
+    #[test]
+    fn test_optin_auto_brightness_only() {
+        let root = fake_intel_laptop("optin_bl");
+        write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
+        let config = Config {
+            auto_brightness: true,
+            ..Default::default()
+        };
+        let runner = optin_runner(&root, &config);
+
+        let res = runner.apply_logic_step(&runner.config());
+        assert!(!res.applied);
+        assert_eq!(
+            read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+            "3500000"
+        );
+        assert_eq!(runner.apply_brightness_step(Some("firefox")), Some(30));
+        assert_eq!(read(&root, &format!("{BL}/brightness")), "300");
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// `battery_charge_limit: Some(n)` fija el umbral; `None` no lo toca.
+    #[test]
+    fn test_optin_charge_limit_only() {
+        let root = fake_intel_laptop("optin_limit");
+        write(
+            &root,
+            "sys/class/power_supply/BAT0/charge_control_end_threshold",
+            "80\n",
+        );
+
+        let with_limit = Config {
+            battery_charge_limit: Some(60),
+            ..Default::default()
+        };
+        let runner = optin_runner(&root, &with_limit);
+        runner.apply_boot_settings(&runner.config());
+        assert_eq!(
+            read(
+                &root,
+                "sys/class/power_supply/BAT0/charge_control_end_threshold"
+            ),
+            "60"
+        );
+
+        write(
+            &root,
+            "sys/class/power_supply/BAT0/charge_control_end_threshold",
+            "80\n",
+        );
+        let without_limit = Config::default();
+        assert_eq!(without_limit.battery_charge_limit, None);
+        let runner = optin_runner(&root, &without_limit);
+        runner.apply_boot_settings(&runner.config());
+        assert_eq!(
+            read(
+                &root,
+                "sys/class/power_supply/BAT0/charge_control_end_threshold"
+            ),
+            "80"
+        );
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// Compatibilidad: `"profile": "Normal"` explícito sigue aplicándose en
+    /// arranque (round-trip de config + escrituras del perfil).
+    #[test]
+    fn test_optin_explicit_normal_profile_still_applies() {
+        let root = fake_intel_laptop("optin_compat");
+        let tmp_cfg = root.path("config.json");
+        fs::write(&tmp_cfg, r#"{"profile":"Normal"}"#).unwrap();
+        let loaded = Config::load_or_default(Some(&tmp_cfg));
+        assert_eq!(loaded.profile, Some(PowerProfile::Normal));
+
+        let runner = optin_runner(&root, &loaded);
+        runner.apply_boot_settings(&runner.config());
+        assert_eq!(
+            read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+            "3500000"
+        );
 
         let _ = fs::remove_dir_all(root.root());
     }

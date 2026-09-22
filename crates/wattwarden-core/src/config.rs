@@ -141,15 +141,18 @@ impl AutoExtremeLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_auto_extreme_enabled")]
+    /// Opt-in puro (Juan): sin ajuste del usuario el daemon no escribe nada.
+    /// Todos los flags empiezan apagados y `profile`/`battery_charge_limit`
+    /// en `None` ("el usuario no eligió nada" = no aplicar nada).
+    #[serde(default)]
     pub auto_extreme_enabled: bool,
     #[serde(default)]
     pub auto_extreme_level: AutoExtremeLevel,
-    #[serde(default = "default_auto_brightness")]
+    #[serde(default)]
     pub auto_brightness: bool,
     #[serde(default)]
-    pub profile: PowerProfile,
-    #[serde(default = "default_battery_limit")]
+    pub profile: Option<PowerProfile>,
+    #[serde(default)]
     pub battery_charge_limit: Option<u8>,
     #[serde(default = "default_terminal_brightness")]
     pub terminal_brightness: u8,
@@ -157,16 +160,18 @@ pub struct Config {
     pub gui_brightness: u8,
 }
 
-fn default_auto_extreme_enabled() -> bool {
-    true
-}
-
-fn default_auto_brightness() -> bool {
-    true
-}
-
-fn default_battery_limit() -> Option<u8> {
-    Some(80)
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            auto_extreme_enabled: false,
+            auto_extreme_level: AutoExtremeLevel::High,
+            auto_brightness: false,
+            profile: None,
+            battery_charge_limit: None,
+            terminal_brightness: 25,
+            gui_brightness: 65,
+        }
+    }
 }
 
 fn default_terminal_brightness() -> u8 {
@@ -175,20 +180,6 @@ fn default_terminal_brightness() -> u8 {
 
 fn default_gui_brightness() -> u8 {
     65
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            auto_extreme_enabled: true,
-            auto_extreme_level: AutoExtremeLevel::High,
-            auto_brightness: true,
-            profile: PowerProfile::Normal,
-            battery_charge_limit: Some(80),
-            terminal_brightness: 25,
-            gui_brightness: 65,
-        }
-    }
 }
 
 impl Config {
@@ -328,12 +319,9 @@ mod tests {
         assert_eq!(cfg.auto_extreme_level, AutoExtremeLevel::High);
     }
 
-    /// Go `service.LoadConfig` (`service.go:48-58`): missing file or missing
-    /// keys fall back to `auto_extreme_enabled = true, auto_brightness = true`.
-    /// A Go-written JSON (`{"auto_extreme_enabled":true,"auto_brightness":false}`)
-    /// must parse in Rust with `auto_brightness == false`, and a Rust-written
-    /// config must stay readable with only those two keys (Go ignores the
-    /// unknown extra fields).
+    /// Opt-in puro (Juan): una config sin campos no habilita nada. Una config
+    /// vieja que diga `"profile": "Normal"` explícito sigue aplicándolo
+    /// (compatibilidad: el valor escrito gana sobre el default `None`).
     #[test]
     fn test_go_config_json_round_trip() {
         let go_json = r#"{"auto_extreme_enabled":true,"auto_brightness":false}"#;
@@ -342,13 +330,38 @@ mod tests {
         assert!(!cfg.auto_brightness);
 
         let missing_keys: Config = serde_json::from_str(r#"{"profile":"Normal"}"#).unwrap();
-        assert!(missing_keys.auto_extreme_enabled);
-        assert!(missing_keys.auto_brightness);
+        assert!(!missing_keys.auto_extreme_enabled);
+        assert!(!missing_keys.auto_brightness);
+        assert_eq!(missing_keys.profile, Some(PowerProfile::Normal));
+
+        let empty: Config = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(!empty.auto_extreme_enabled);
+        assert!(!empty.auto_brightness);
+        assert_eq!(empty.profile, None);
+        assert_eq!(empty.battery_charge_limit, None);
 
         let written = serde_json::to_string(&Config::default()).unwrap();
         let back: serde_json::Value = serde_json::from_str(&written).unwrap();
-        assert_eq!(back["auto_extreme_enabled"], serde_json::Value::Bool(true));
-        assert_eq!(back["auto_brightness"], serde_json::Value::Bool(true));
+        assert_eq!(back["auto_extreme_enabled"], serde_json::Value::Bool(false));
+        assert_eq!(back["auto_brightness"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn test_default_config_enables_nothing() {
+        let cfg = Config::default();
+        assert!(!cfg.auto_extreme_enabled);
+        assert!(!cfg.auto_brightness);
+        assert_eq!(cfg.profile, None);
+        assert_eq!(cfg.battery_charge_limit, None);
+    }
+
+    #[test]
+    fn test_explicit_normal_profile_round_trip() {
+        let cfg: Config = serde_json::from_str(r#"{"profile":"Normal"}"#).unwrap();
+        assert_eq!(cfg.profile, Some(PowerProfile::Normal));
+        let written = serde_json::to_string(&cfg).unwrap();
+        let back: Config = serde_json::from_str(&written).unwrap();
+        assert_eq!(back.profile, Some(PowerProfile::Normal));
     }
 
     #[test]

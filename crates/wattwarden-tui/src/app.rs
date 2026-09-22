@@ -335,7 +335,7 @@ impl App {
         // Go modal confirm (`cli.go:614-617`): full `StopBackgroundDaemon`.
         self.stop_background_daemon();
         let _ = self.backend.apply_profile(&PowerProfile::Extreme);
-        self.config.profile = PowerProfile::Extreme;
+        self.config.profile = Some(PowerProfile::Extreme);
         let _ = self.config.save(None);
         self.set_toast("EXTREME MODE ACTIVATED");
     }
@@ -352,7 +352,7 @@ impl App {
         // full `StopBackgroundDaemon`, then the restore writes.
         self.stop_background_daemon();
         let _ = self.backend.apply_profile(&PowerProfile::Normal);
-        self.config.profile = PowerProfile::Normal;
+        self.config.profile = Some(PowerProfile::Normal);
         let _ = self.config.save(None);
         self.set_toast(message);
     }
@@ -364,7 +364,7 @@ impl App {
                 // Go (`cli.go:356`): `StopBackgroundDaemon` before the writes.
                 self.stop_background_daemon();
                 let _ = self.backend.apply_profile(&PowerProfile::Performance);
-                self.config.profile = PowerProfile::Performance;
+                self.config.profile = Some(PowerProfile::Performance);
                 let _ = self.config.save(None);
                 self.set_toast("PERFORMANCE MODE ACTIVATED");
             }
