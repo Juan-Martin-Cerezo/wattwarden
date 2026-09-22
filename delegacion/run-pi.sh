@@ -44,13 +44,14 @@ AGY_ARGS=(-p "$(cat delegacion/prompt-pm.md)" --dangerously-skip-permissions)
 has_flag "$AGY" --model && AGY_ARGS+=(--model gemini-3.8-flash-high)
 has_flag "$AGY" --effort && AGY_ARGS+=(--effort high)
 has_flag "$AGY" --print-timeout && AGY_ARGS+=(--print-timeout 60m)
-timeout 3900 "$AGY" "${AGY_ARGS[@]}" >>"$LOG" 2>&1
+[ "${SKIP_PM:-0}" = "1" ] || timeout 3900 "$AGY" "${AGY_ARGS[@]}" >>"$LOG" 2>&1
 AGY_EXIT=$?
 NEW_PM=$(git rev-list "$BASE"..HEAD --count)
 log "agy exit=$AGY_EXIT commits_nuevos=$NEW_PM"
 
 # nudge si el PM no dejó commits (patrón conocido: agy sale sin trabajar)
 for i in 1 2; do
+  [ "${SKIP_PM:-0}" = "1" ] && break
   [ "$NEW_PM" -gt 0 ] && break
   log "PM sin commits -> nudge $i"
   timeout 2400 "$AGY" -c -p "No hiciste commits. Implementá la paridad del daemon COMPLETA en este turno: los dos tickers (5s logica / 300ms brillo), escalones discretos 0/0.333/0.667/1.0, techo 40%, EPP power + turbo por escalon, los 7 perifericos por tick, cambio de rama por IsCharging() en cada tick, SIGTERM/SIGHUP, y los tests con sysfs falso. Prohibido terminar el turno sin commits." --dangerously-skip-permissions >>"$LOG" 2>&1
@@ -62,8 +63,7 @@ MID="$(git rev-parse HEAD)"
 
 # ---------- 2) Junior: Command Code ----------
 log "=== Junior (command-code) arrancando ==="
-MODEL=$("$CC" --list-models 2>/dev/null | grep -iE "muse|spark" | head -1 | awk '{print $1}')
-[ -z "$MODEL" ] && MODEL="deepseek/deepseek-v4-flash"
+MODEL="${WATTWARDEN_JUNIOR_MODEL:-deepseek/deepseek-v4-flash}"
 log "modelo junior: $MODEL"
 CC_ARGS=(-p "$(cat delegacion/prompt-junior.md)" --trust --dangerously-skip-permissions --tools-all --max-turns 240 -m "$MODEL")
 has_flag "$CC" --skip-onboarding && CC_ARGS+=(--skip-onboarding)
