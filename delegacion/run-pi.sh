@@ -67,7 +67,7 @@ MID="$(git rev-parse HEAD)"
 
 # ---------- 2) Junior: Command Code ----------
 log "=== Junior (command-code) arrancando ==="
-MODEL="${WATTWARDEN_JUNIOR_MODEL:-meta/muse-spark-1.3}"
+MODEL="${WATTWARDEN_JUNIOR_MODEL:-deepseek/deepseek-v4.1-flash}"
 log "modelo junior: $MODEL"
 
 # Pre-flight del modelo: un modelo puede estar LISTADO y devolver 404 (pasó el 22/09 con
@@ -78,7 +78,7 @@ probe_model() {
 }
 if ! probe_model "$MODEL"; then
   log "modelo $MODEL no responde -> buscando reemplazo verificado"
-  for m in meta/muse-spark-1.3 deepseek/deepseek-v4-flash meta/muse-spark-1.2 meta/muse-spark-1.1; do
+  for m in xiaomi/mimo-v2.6-flash deepseek/deepseek-v4-flash meta/muse-spark-1.2-contributor meta/muse-spark-1.1; do
     if [ "$m" != "$MODEL" ] && probe_model "$m"; then
       MODEL="$m"; log "modelo de reemplazo verificado: $m"; break
     fi
