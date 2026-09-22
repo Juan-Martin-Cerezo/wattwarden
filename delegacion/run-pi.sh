@@ -65,7 +65,8 @@ MID="$(git rev-parse HEAD)"
 log "=== Junior (command-code) arrancando ==="
 MODEL="${WATTWARDEN_JUNIOR_MODEL:-meta/muse-spark-1.3-contributor}"
 log "modelo junior: $MODEL"
-CC_ARGS=(-p "$(cat delegacion/prompt-junior.md)" --trust --dangerously-skip-permissions --tools-all --max-turns 240 -m "$MODEL")
+PROMPT_JUNIOR="${PROMPT_JUNIOR:-delegacion/prompt-junior.md}"
+CC_ARGS=(-p "$(cat "$PROMPT_JUNIOR")" --trust --dangerously-skip-permissions --tools-all --max-turns 240 -m "$MODEL")
 has_flag "$CC" --skip-onboarding && CC_ARGS+=(--skip-onboarding)
 timeout 3900 "$CC" "${CC_ARGS[@]}" >>"$LOG" 2>&1
 CC_EXIT=$?
