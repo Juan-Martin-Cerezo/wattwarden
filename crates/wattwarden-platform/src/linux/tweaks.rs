@@ -22,6 +22,7 @@
 
 use crate::linux::cmd;
 use crate::linux::sysfs::SysfsRoot;
+use tracing::debug;
 use wattwarden_core::{Result, SystemTweaksController};
 
 const IWLWIFI_POWER_SAVE: &str = "sys/module/iwlwifi/parameters/power_save";
@@ -67,6 +68,20 @@ impl LinuxSystemTweaks {
             .collect()
     }
 
+    /// Best-effort write that only touches a node the kernel actually exposes.
+    ///
+    /// Several of these knobs are module parameters or proc entries that simply do
+    /// not exist on every machine (a desktop without `iwlwifi`, a container without
+    /// `/proc/sys/kernel`). Writing to a nonexistent node is a no-op at best; skip it
+    /// explicitly so the discovery is what decides, not a failed `fs::write`.
+    fn write_node(&self, rel: &str, val: &str) {
+        if self.root.exists(rel) {
+            self.root.write_best_effort(rel, val);
+        } else {
+            debug!("tweaks: {rel} not exposed by the kernel; not writing");
+        }
+    }
+
     /// `power/control` nodes of every USB and PCI device, in glob order.
     fn control_nodes(&self) -> Vec<String> {
         let mut nodes: Vec<String> = Vec::new();
@@ -97,8 +112,7 @@ impl SystemTweaksController for LinuxSystemTweaks {
     }
 
     fn set_wifi_power_save(&self, enabled: bool) -> Result<()> {
-        self.root
-            .write_best_effort(IWLWIFI_POWER_SAVE, if enabled { "Y" } else { "N" });
+        self.write_node(IWLWIFI_POWER_SAVE, if enabled { "Y" } else { "N" });
 
         let state = if enabled { "on" } else { "off" };
         for iface in Self::wifi_interfaces() {
@@ -113,9 +127,8 @@ impl SystemTweaksController for LinuxSystemTweaks {
     }
 
     fn set_audio_power_save(&self, enabled: bool) -> Result<()> {
-        self.root
-            .write_best_effort(SND_HDA_POWER_SAVE, if enabled { "1" } else { "0" });
-        self.root.write_best_effort(
+        self.write_node(SND_HDA_POWER_SAVE, if enabled { "1" } else { "0" });
+        self.write_node(
             SND_HDA_POWER_SAVE_CONTROLLER,
             if enabled { "Y" } else { "N" },
         );
@@ -138,7 +151,7 @@ impl SystemTweaksController for LinuxSystemTweaks {
     fn set_autosuspend(&self, enabled: bool) -> Result<()> {
         let value = if enabled { "auto" } else { "on" };
         for node in self.control_nodes() {
-            self.root.write_best_effort(&node, value);
+            self.write_node(&node, value);
         }
         Ok(())
     }
@@ -148,8 +161,7 @@ impl SystemTweaksController for LinuxSystemTweaks {
     }
 
     fn set_nmi_watchdog(&self, enabled: bool) -> Result<()> {
-        self.root
-            .write_best_effort(NMI_WATCHDOG, if enabled { "1" } else { "0" });
+        self.write_node(NMI_WATCHDOG, if enabled { "1" } else { "0" });
         Ok(())
     }
 
@@ -164,13 +176,12 @@ impl SystemTweaksController for LinuxSystemTweaks {
         let centisecs = seconds
             .saturating_mul(100)
             .clamp(VM_WRITEBACK_MIN_CENTISECS, VM_WRITEBACK_MAX_CENTISECS);
-        self.root
-            .write_best_effort(DIRTY_WRITEBACK, &centisecs.to_string());
+        self.write_node(DIRTY_WRITEBACK, &centisecs.to_string());
         Ok(())
     }
 
     fn process_purge(&self) -> Result<()> {
-        self.root.write_best_effort(DROP_CACHES, "3");
+        self.write_node(DROP_CACHES, "3");
         Ok(())
     }
 }

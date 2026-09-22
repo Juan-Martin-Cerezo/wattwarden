@@ -20,6 +20,39 @@ pub struct LogicStepResult {
     pub target_epp: &'static str,
 }
 
+/// Ceiling of online cores for a level, derived from the discovered CPU count.
+///
+/// `discrete_power` is quantised into 4 steps (`0`, `1/3`, `2/3`, `1`). The ceiling is
+/// `ceil(ncpu * level_ceiling)` clipped to `[2, ncpu]` as soon as `ncpu >= 2`.
+///
+/// The floor of 2 is the whole point: the previous `(ncpu / 2).max(1)` gave **1** on a
+/// 3-core machine (the Dell Vostro), i.e. a flat ramp with zero adaptation. With the
+/// floor, `ncpu = 3` produces the ramp `1, 1, 2, 2` (at least two distinct steps) and
+/// any larger machine keeps a ceiling proportional to its own core count.
+fn core_ceiling(ncpu: usize, level_ceiling: f64) -> usize {
+    if ncpu <= 1 {
+        return 1;
+    }
+    ((ncpu as f64 * level_ceiling).ceil() as usize).clamp(2, ncpu)
+}
+
+/// `cores = clamp(round(1 + discrete_power * (ceiling - 1)), 1, ceiling)`.
+fn core_ramp_cores(ncpu: usize, level_ceiling: f64, discrete_power: f64) -> usize {
+    let ceiling = core_ceiling(ncpu, level_ceiling);
+    let cores = (1.0 + discrete_power * (ceiling - 1) as f64).round() as usize;
+    cores.clamp(1, ceiling)
+}
+
+/// Scales `discrete_power` inside the *discovered* range `[min, max]`, capped by the
+/// level ceiling: `ceiling = min + (max - min) * level_ceiling`, then
+/// `min + discrete_power * (ceiling - min)`. Clamped to `max`, so no value can ever
+/// exceed the ceiling the hardware itself declared.
+fn scale_within(min: u32, max: u32, level_ceiling: f64, discrete_power: f64) -> u32 {
+    let ceiling = min as f64 + (max - min) as f64 * level_ceiling;
+    let value = min as f64 + discrete_power * (ceiling - min as f64);
+    (value as u32).min(max)
+}
+
 async fn wait_for_shutdown() {
     #[cfg(unix)]
     {
@@ -218,42 +251,45 @@ impl DaemonRunner {
             AutoExtremeLevel::Low => 1.0,
         };
 
-        let (min_cpu, hw_max_cpu) = self.backend.cpu.freq_bounds().unwrap_or((400, 1600));
+        // Frequency/GPU ranges come from discovery only. When a range cannot be
+        // discovered the value stays at 0 and the corresponding setter (gated on the
+        // same discovery) writes nothing — no absolute fallback ever reaches a write.
+        let (min_cpu, hw_max_cpu) = self.backend.cpu.discovered_freq_bounds().unwrap_or((0, 0));
         let max_cpu = (min_cpu as f64 + (hw_max_cpu as f64 - min_cpu as f64) * ceiling) as u32;
 
-        let (min_gpu, hw_max_gpu) = if let Some(gpu) = &self.backend.gpu {
-            gpu.gpu_bounds().unwrap_or((300, 1100))
-        } else {
-            (300, 1100)
-        };
+        let (min_gpu, hw_max_gpu) = self
+            .backend
+            .gpu
+            .as_ref()
+            .and_then(|gpu| gpu.discovered_gpu_bounds())
+            .unwrap_or((0, 0));
         let max_gpu = (min_gpu as f64 + (hw_max_gpu as f64 - min_gpu as f64) * ceiling) as u32;
 
-        let (min_w, hw_max_w) = if let Some(rapl) = &self.backend.rapl {
-            rapl.rapl_bounds().unwrap_or((5, 115))
-        } else {
-            (5, 115)
-        };
-        let max_w = (min_w as f64 + (hw_max_w as f64 - min_w as f64) * ceiling) as u32;
-
-        // High keeps the exact Go-validated shape: 1 -> ncpu/2.
-        // Medium/Low (Juan-approved): cores always start at 1 and scale to ncpu.
-        let target_cores = match level {
-            AutoExtremeLevel::High => {
-                let max_cores = (ncpu / 2).max(1);
-                let cores = (1.0 + discrete_power * (max_cores - 1) as f64) as usize;
-                cores.max(1)
-            }
-            AutoExtremeLevel::Medium | AutoExtremeLevel::Low => {
-                let cores = (1.0 + discrete_power * (ncpu - 1) as f64) as usize;
-                cores.max(1).min(ncpu)
-            }
-        };
+        // Cores: the ramp is derived from the discovered CPU count, never from a
+        // static `(ncpu / 2).max(1)` that collapses on small machines (`core_ramp_cores`).
+        let target_cores = core_ramp_cores(ncpu, ceiling, discrete_power);
 
         let target_cpu =
             (min_cpu as f64 + discrete_power * (max_cpu as f64 - min_cpu as f64)) as u32;
         let target_gpu =
             (min_gpu as f64 + discrete_power * (max_gpu as f64 - min_gpu as f64)) as u32;
-        let target_rapl = (min_w as f64 + discrete_power * (max_w as f64 - min_w as f64)) as u32;
+
+        // RAPL: PL1 and PL2 are separate constraints with their own *discovered*
+        // ranges. Each target is scaled inside its own range and can never exceed the
+        // hardware's `constraint_N_max_power_uw`; a constraint without a discovered
+        // range is skipped by the controller (nothing is written).
+        let mut target_rapl = 0;
+        if let Some(rapl) = &self.backend.rapl {
+            if let Some((min_w, max_w)) = rapl.pl1_bounds_watts() {
+                let target = scale_within(min_w, max_w, ceiling, discrete_power);
+                let _ = rapl.set_pl1_watts(target);
+                target_rapl = target;
+            }
+            if let Some((min_w, max_w)) = rapl.pl2_bounds_watts() {
+                let target = scale_within(min_w, max_w, ceiling, discrete_power);
+                let _ = rapl.set_pl2_watts(target);
+            }
+        }
 
         // Turbo thresholds per approved table (the spec labels the middle steps
         // 0.67/0.33 after 2-decimal rounding; compare against the exact step
@@ -281,10 +317,6 @@ impl DaemonRunner {
         let _ = self.backend.cpu.set_freq_limit(target_cpu);
         if let Some(gpu) = &self.backend.gpu {
             let _ = gpu.set_gpu_freq(target_gpu);
-        }
-        if let Some(rapl) = &self.backend.rapl {
-            let _ = rapl.set_pl1_watts(target_rapl);
-            let _ = rapl.set_pl2_watts(target_rapl);
         }
         let _ = self
             .backend
@@ -466,11 +498,31 @@ mod tests {
         }
         write(&root, &format!("{CPU}/intel_pstate/no_turbo"), "0\n");
 
-        // RAPL: 2 W .. 60 W
+        // RAPL: 2 W .. 60 W, with the per-constraint range the kernel really exposes.
         write(&root, &format!("{RAPL}/min_power_range_uw"), "2000000\n");
         write(&root, &format!("{RAPL}/max_power_range_uw"), "60000000\n");
         write(&root, &format!("{RAPL}/constraint_0_name"), "long_term\n");
         write(&root, &format!("{RAPL}/constraint_1_name"), "short_term\n");
+        write(
+            &root,
+            &format!("{RAPL}/constraint_0_min_power_uw"),
+            "2000000\n",
+        );
+        write(
+            &root,
+            &format!("{RAPL}/constraint_0_max_power_uw"),
+            "60000000\n",
+        );
+        write(
+            &root,
+            &format!("{RAPL}/constraint_1_min_power_uw"),
+            "2000000\n",
+        );
+        write(
+            &root,
+            &format!("{RAPL}/constraint_1_max_power_uw"),
+            "60000000\n",
+        );
         write(
             &root,
             &format!("{RAPL}/constraint_0_power_limit_uw"),
@@ -732,12 +784,22 @@ mod tests {
         }
         write(&root, &format!("{CPU}/intel_pstate/no_turbo"), "1\n");
 
-        // Go `GetRAPLBounds` reads `max_power_range_uw`; 115 W is the max of the
-        // range, not a literal baked into the daemon (`backend_linux.go:279-289`).
+        // Each constraint declares its own ceiling through `constraint_N_max_power_uw`;
+        // the 115 W here is that discovered ceiling, not a literal baked anywhere.
         write(&root, &format!("{RAPL}/min_power_range_uw"), "0\n");
         write(&root, &format!("{RAPL}/max_power_range_uw"), "115000000\n");
         write(&root, &format!("{RAPL}/constraint_0_name"), "long_term\n");
         write(&root, &format!("{RAPL}/constraint_1_name"), "short_term\n");
+        write(
+            &root,
+            &format!("{RAPL}/constraint_0_max_power_uw"),
+            "115000000\n",
+        );
+        write(
+            &root,
+            &format!("{RAPL}/constraint_1_max_power_uw"),
+            "115000000\n",
+        );
         write(
             &root,
             &format!("{RAPL}/constraint_0_power_limit_uw"),
@@ -773,7 +835,9 @@ mod tests {
         assert_eq!(res.target_cores, 1);
         assert_eq!(res.target_freq, 400);
         assert_eq!(res.target_rapl, 0);
-        assert_eq!(res.target_gpu, 300);
+        // This fake has no DRM card at all: with no discovered GPU range nothing is
+        // written and the reported target is 0 (never an invented 300 MHz default).
+        assert_eq!(res.target_gpu, 0);
         assert!(!res.target_turbo);
         assert_eq!(res.target_epp, "power");
 
@@ -1040,9 +1104,10 @@ mod tests {
                 load: "4.00",
                 dp_num: 2.0,
                 dp_den: 3.0,
-                cores: 5,
+                // Core ceiling = ceil(8 * 0.7) = 6 -> ramp 1/3/4/6.
+                cores: 4,
                 freq: 1846,
-                rapl: 28,
+                rapl: 29,
                 gpu: 673,
                 turbo: true,
                 epp: "power",
@@ -1051,7 +1116,7 @@ mod tests {
                 load: "8.00",
                 dp_num: 1.0,
                 dp_den: 1.0,
-                cores: 8,
+                cores: 6,
                 freq: 2570,
                 rapl: 42,
                 gpu: 860,
@@ -1086,7 +1151,8 @@ mod tests {
                 load: "4.00",
                 dp_num: 2.0,
                 dp_den: 3.0,
-                cores: 5,
+                // Core ceiling = ceil(8 * 1.0) = 8 -> ramp 1/3/6/8.
+                cores: 6,
                 freq: 2466,
                 rapl: 40,
                 gpu: 833,
@@ -1349,7 +1415,7 @@ mod tests {
         write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
         let res_med_1 = runner_med.apply_logic_step(&cfg_medium);
         assert_eq!(res_med_1.target_freq, 2570);
-        assert_eq!(res_med_1.target_cores, 8);
+        assert_eq!(res_med_1.target_cores, 6);
         assert_eq!(res_med_1.target_rapl, 42);
         assert!(res_med_1.target_turbo);
         assert_eq!(res_med_1.target_epp, "power");
@@ -1711,6 +1777,232 @@ mod tests {
         assert_eq!(
             read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
             "3500000"
+        );
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// Fake Dell built from the measured table: `cpus` cores, a `min..max` kHz range
+    /// and a PL1 RAPL ceiling in microwatts. PL2 is deliberately left unexposed (0),
+    /// exactly like both real Dells.
+    fn fake_machine(
+        tag: &str,
+        cpus: usize,
+        min_khz: u64,
+        max_khz: u64,
+        pl1_max_uw: u64,
+    ) -> SysfsRoot {
+        let dir = std::env::temp_dir().join(format!("ww_daemon_hw_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let root = SysfsRoot::new(&dir);
+
+        for i in 0..cpus {
+            let base = format!("{CPU}/cpu{i}");
+            write(
+                &root,
+                &format!("{base}/cpufreq/cpuinfo_min_freq"),
+                &format!("{min_khz}\n"),
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/cpuinfo_max_freq"),
+                &format!("{max_khz}\n"),
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/scaling_min_freq"),
+                &format!("{min_khz}\n"),
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/scaling_max_freq"),
+                &format!("{max_khz}\n"),
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/energy_performance_preference"),
+                "balance_performance\n",
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/scaling_governor"),
+                "powersave\n",
+            );
+            if i > 0 {
+                write(&root, &format!("{base}/online"), "1\n");
+            }
+        }
+        write(&root, &format!("{CPU}/intel_pstate/no_turbo"), "0\n");
+
+        write(&root, &format!("{RAPL}/min_power_range_uw"), "0\n");
+        write(
+            &root,
+            &format!("{RAPL}/max_power_range_uw"),
+            &format!("{pl1_max_uw}\n"),
+        );
+        write(&root, &format!("{RAPL}/constraint_0_name"), "long_term\n");
+        write(
+            &root,
+            &format!("{RAPL}/constraint_0_max_power_uw"),
+            &format!("{pl1_max_uw}\n"),
+        );
+        write(
+            &root,
+            &format!("{RAPL}/constraint_0_power_limit_uw"),
+            &format!("{pl1_max_uw}\n"),
+        );
+        write(&root, &format!("{RAPL}/constraint_1_name"), "short_term\n");
+        write(&root, &format!("{RAPL}/constraint_1_max_power_uw"), "0\n");
+        write(
+            &root,
+            &format!("{RAPL}/constraint_1_power_limit_uw"),
+            "1234000000\n",
+        );
+
+        write(&root, &format!("{DRM}/card1/gt_RPn_freq_mhz"), "300\n");
+        write(&root, &format!("{DRM}/card1/gt_RP0_freq_mhz"), "1500\n");
+        write(&root, &format!("{DRM}/card1/gt_min_freq_mhz"), "300\n");
+        write(&root, &format!("{DRM}/card1/gt_max_freq_mhz"), "1500\n");
+
+        write(&root, &format!("{BL}/max_brightness"), "1000\n");
+        write(&root, &format!("{BL}/brightness"), "500\n");
+
+        write(&root, &format!("{BAT}/type"), "Battery\n");
+        write(&root, &format!("{BAT}/status"), "Discharging\n");
+        write(&root, "sys/class/power_supply/AC/type", "Mains\n");
+        write(&root, "sys/class/power_supply/AC/online", "0\n");
+
+        root
+    }
+
+    /// Same `discrete_power`, different machine: every written value scales with the
+    /// discovered hardware and RAPL can never exceed `constraint_0_max_power_uw`.
+    #[test]
+    fn test_hw_agnostic_scales_per_machine_and_never_exceeds() {
+        let cases = [
+            ("vostro", 3usize, 400_000u64, 1_600_000u64, 15_000_000u64),
+            ("g15", 20, 400_000, 4_600_000, 45_000_000),
+        ];
+
+        for (tag, cpus, min_khz, max_khz, pl1_max_uw) in cases {
+            let root = fake_machine(tag, cpus, min_khz, max_khz, pl1_max_uw);
+            let backend = LinuxBackend::with_root(root.clone()).unwrap();
+            let config = Config {
+                auto_extreme_enabled: true,
+                auto_extreme_level: AutoExtremeLevel::High,
+                ..Default::default()
+            };
+            let runner = DaemonRunner::with_paths(backend, None, None);
+
+            // dp = 0 -> the discovered minimums.
+            write(&root, "proc/loadavg", "0.00 0.00 0.00 1/1 1234\n");
+            let idle = runner.apply_logic_step(&config);
+            assert_eq!(idle.discrete_power, 0.0);
+            assert_eq!(idle.target_cores, 1, "{tag}: idle cores");
+            assert_eq!(idle.target_freq, 400, "{tag}: idle freq");
+            assert_eq!(idle.target_rapl, 0, "{tag}: idle RAPL");
+
+            // dp = 1 -> the level ceiling of *this* machine's discovered range.
+            let load = format!("{cpus}.00");
+            write(
+                &root,
+                "proc/loadavg",
+                &format!("{load} {load} {load} 1/1 1234\n"),
+            );
+            let busy = runner.apply_logic_step(&config);
+            assert_eq!(busy.discrete_power, 1.0);
+
+            let min_mhz = (min_khz / 1000) as u32;
+            let max_mhz = (max_khz / 1000) as u32;
+            let expected_freq = (min_mhz as f64 + (max_mhz - min_mhz) as f64 * 0.4) as u32;
+            assert_eq!(
+                busy.target_freq, expected_freq,
+                "{tag}: freq scales with the hw range"
+            );
+
+            let expected_cores = ((cpus as f64 * 0.4).ceil() as usize).clamp(2, cpus);
+            assert_eq!(
+                busy.target_cores, expected_cores,
+                "{tag}: core ramp scales with ncpu"
+            );
+
+            let pl1_max_w = (pl1_max_uw / 1_000_000) as u32;
+            let expected_rapl = (pl1_max_w as f64 * 0.4) as u32;
+            assert_eq!(
+                busy.target_rapl, expected_rapl,
+                "{tag}: RAPL scales with the ceiling"
+            );
+            assert!(
+                busy.target_rapl <= pl1_max_w,
+                "{tag}: RAPL stays within the ceiling"
+            );
+
+            // The written constraint is exactly the reported target, inside range.
+            let written: u64 = read(&root, &format!("{RAPL}/constraint_0_power_limit_uw"))
+                .parse()
+                .unwrap();
+            assert_eq!(written, busy.target_rapl as u64 * 1_000_000);
+            assert!(written <= pl1_max_uw, "{tag}: never above max_power_uw");
+
+            // PL2 has no discovered range -> left untouched.
+            assert_eq!(
+                read(&root, &format!("{RAPL}/constraint_1_power_limit_uw")),
+                "1234000000",
+                "{tag}: PL2 without a range must not be written"
+            );
+
+            let _ = fs::remove_dir_all(root.root());
+        }
+    }
+
+    /// The core ramp always has steps, even on a 3-core machine (the old
+    /// `(ncpu / 2).max(1)` collapsed to a flat 1).
+    #[test]
+    fn test_core_ramp_has_at_least_two_distinct_steps_on_three_cores() {
+        let steps: Vec<usize> = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]
+            .iter()
+            .map(|dp| core_ramp_cores(3, 0.4, *dp))
+            .collect();
+        assert_eq!(steps, vec![1, 1, 2, 2]);
+
+        let mut distinct = steps.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(distinct.len() >= 2, "the ramp must not be flat");
+        assert_eq!(distinct, vec![1, 2]);
+
+        // A 2-core machine still moves; a single-core machine cannot.
+        assert_eq!(core_ramp_cores(2, 0.4, 1.0), 2);
+        assert_eq!(core_ramp_cores(1, 0.4, 1.0), 1);
+
+        // A big machine keeps a proportional ramp with four distinct steps.
+        let big: Vec<usize> = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]
+            .iter()
+            .map(|dp| core_ramp_cores(20, 0.4, *dp))
+            .collect();
+        assert_eq!(big, vec![1, 3, 6, 8]);
+    }
+
+    /// A RAPL constraint without `max_power_uw` is skipped by the ladder: nothing is
+    /// written and the reported target is 0.
+    #[test]
+    fn test_rapl_not_written_when_constraint_range_is_missing() {
+        let root = fake_machine("norange", 4, 400_000, 1_600_000, 15_000_000);
+        fs::remove_file(root.path(&format!("{RAPL}/constraint_0_max_power_uw"))).unwrap();
+
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let config = Config {
+            auto_extreme_enabled: true,
+            ..Default::default()
+        };
+        let runner = DaemonRunner::with_paths(backend, None, None);
+
+        write(&root, "proc/loadavg", "4.00 4.00 4.00 1/4 1234\n");
+        let res = runner.apply_logic_step(&config);
+        assert_eq!(res.target_rapl, 0);
+        assert_eq!(
+            read(&root, &format!("{RAPL}/constraint_0_power_limit_uw")),
+            "15000000"
         );
 
         let _ = fs::remove_dir_all(root.root());

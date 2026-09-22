@@ -274,11 +274,25 @@ fn draw_bar_graph(
 }
 
 /// Go renders boolean rows as `[ACTIVE]`/`[OFF]`, never `[true]`/`[false]`.
+///
+/// `cli.go:250-252`: the raw `%v` value is wrapped in `[...]` and then `true`/`false`
+/// are rewritten to `ACTIVE`/`OFF`.
 fn display_bool(value: bool) -> String {
     if value {
         "[ACTIVE]".into()
     } else {
         "[OFF]".into()
+    }
+}
+
+/// Go renders a numeric reading as `[<n>]`, or the literal `[N/A]` when the value is
+/// not positive (`cli.go:420-423`, `:427-430`, `:434-437`). This is the branch Rust
+/// used to get wrong (`[0]` instead of `[N/A]`).
+fn format_number(value: i64) -> String {
+    if value <= 0 {
+        "[N/A]".into()
+    } else {
+        format!("[{value}]")
     }
 }
 
@@ -338,7 +352,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         }
         ActionItem::FreqLimit => {
             let freq = app.backend.cpu.freq_limit().unwrap_or(0);
-            ("CPU Freq (MHz)", format!("[{}]", freq), false)
+            ("CPU Freq (MHz)", format_number(freq as i64), false)
         }
         ActionItem::GpuFreq => {
             let g = app
@@ -347,15 +361,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
                 .as_ref()
                 .and_then(|gpu| gpu.gpu_freq().ok())
                 .unwrap_or(0);
-            (
-                "Freq iGPU (MHz)",
-                if g > 0 {
-                    format!("[{}]", g)
-                } else {
-                    "[N/A]".into()
-                },
-                false,
-            )
+            ("Freq iGPU (MHz)", format_number(g as i64), false)
         }
         ActionItem::RaplPl1 => {
             let pl1 = app
@@ -364,15 +370,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
                 .as_ref()
                 .and_then(|r| r.pl1_watts().ok())
                 .unwrap_or(0);
-            (
-                "RAPL PL1 (W)",
-                if pl1 > 0 {
-                    format!("[{}]", pl1)
-                } else {
-                    "[N/A]".into()
-                },
-                false,
-            )
+            ("RAPL PL1 (W)", format_number(pl1 as i64), false)
         }
         ActionItem::RaplPl2 => {
             let pl2 = app
@@ -381,15 +379,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
                 .as_ref()
                 .and_then(|r| r.pl2_watts().ok())
                 .unwrap_or(0);
-            (
-                "RAPL PL2 (W)",
-                if pl2 > 0 {
-                    format!("[{}]", pl2)
-                } else {
-                    "[N/A]".into()
-                },
-                false,
-            )
+            ("RAPL PL2 (W)", format_number(pl2 as i64), false)
         }
         ActionItem::Turbo => {
             let t = app.backend.cpu.turbo_enabled().unwrap_or(false);
@@ -419,7 +409,9 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
                 .as_ref()
                 .and_then(|bl| bl.brightness_percent().ok())
                 .unwrap_or(0);
-            ("LCD Brightness (%)", format!("[{}%]", b), false)
+            // Go `cli.go:456` renders the bare `%d`; the `(%)` lives only in the label,
+            // so the value is `[100]`, not `[100%]`.
+            ("LCD Brightness (%)", format!("[{b}]"), false)
         }
         ActionItem::KbdBacklight => {
             let k = app.backend.peripherals.kbd_backlight().unwrap_or(false);
@@ -694,5 +686,35 @@ fn draw_extreme_modal(buf: &mut Buffer, w: usize, h: usize) {
             text_x += 1;
         }
         set_str(buf, text_x, box_y + row_offset, text, style);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Go rewrites the raw `true`/`false` into `[ACTIVE]`/`[OFF]` (`cli.go:251-252`).
+    /// Locked down because it regressed here to `[true]`/`[false]`.
+    #[test]
+    fn golden_display_bool_is_active_or_off() {
+        assert_eq!(display_bool(true), "[ACTIVE]");
+        assert_eq!(display_bool(false), "[OFF]");
+    }
+
+    /// Numeric readings are `[<n>]`, or the literal `[N/A]` when non-positive
+    /// (`cli.go:420-423`, `:427-430`, `:434-437`).
+    #[test]
+    fn golden_numeric_values_are_bracketed_or_na() {
+        assert_eq!(format_number(1100), "[1100]");
+        assert_eq!(format_number(45), "[45]");
+        assert_eq!(format_number(0), "[N/A]");
+        assert_eq!(format_number(-3), "[N/A]");
+    }
+
+    /// The LCD value keeps Go's bare `%d` (the `%` is only in the label).
+    #[test]
+    fn golden_lcd_brightness_value_has_no_percent_sign() {
+        assert_eq!(format!("[{}]", 100), "[100]");
+        assert_eq!(format!("[{}]", 0), "[0]");
     }
 }

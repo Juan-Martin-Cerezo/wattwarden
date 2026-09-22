@@ -98,19 +98,24 @@ impl LinuxBackend {
         match profile {
             PowerProfile::Performance => {
                 let _ = self.cpu.set_online_cores(self.cpu.num_cpus());
-                let (_, max_freq) = self.cpu.freq_bounds().unwrap_or((400, 4500));
-                let _ = self.cpu.set_freq_limit(max_freq);
+                if let Some((_, max_freq)) = self.cpu.discovered_freq_bounds() {
+                    let _ = self.cpu.set_freq_limit(max_freq);
+                }
                 let _ = self.cpu.set_turbo_enabled(true);
                 let _ = self.cpu.set_energy_performance_preference("performance");
 
                 if let Some(rapl) = &self.rapl {
-                    let (_, max_w) = rapl.rapl_bounds().unwrap_or((5, 115));
-                    let _ = rapl.set_pl1_watts(max_w);
-                    let _ = rapl.set_pl2_watts(max_w);
+                    if let Some((_, max_w)) = rapl.pl1_bounds_watts() {
+                        let _ = rapl.set_pl1_watts(max_w);
+                    }
+                    if let Some((_, max_w)) = rapl.pl2_bounds_watts() {
+                        let _ = rapl.set_pl2_watts(max_w);
+                    }
                 }
                 if let Some(gpu) = &self.gpu {
-                    let (_, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
-                    let _ = gpu.set_gpu_freq(max_g);
+                    if let Some((_, max_g)) = gpu.discovered_gpu_bounds() {
+                        let _ = gpu.set_gpu_freq(max_g);
+                    }
                 }
                 if let Some(aspm) = &self.aspm {
                     let _ = aspm.set_aspm_policy("performance");
@@ -127,19 +132,24 @@ impl LinuxBackend {
             }
             PowerProfile::Extreme => {
                 let _ = self.cpu.set_online_cores(2.min(self.cpu.num_cpus()));
-                let (min_freq, _) = self.cpu.freq_bounds().unwrap_or((400, 1600));
-                let _ = self.cpu.set_freq_limit(min_freq);
+                if let Some((min_freq, _)) = self.cpu.discovered_freq_bounds() {
+                    let _ = self.cpu.set_freq_limit(min_freq);
+                }
                 let _ = self.cpu.set_turbo_enabled(false);
                 let _ = self.cpu.set_energy_performance_preference("power");
 
                 if let Some(rapl) = &self.rapl {
-                    let (min_w, _) = rapl.rapl_bounds().unwrap_or((5, 15));
-                    let _ = rapl.set_pl1_watts(min_w);
-                    let _ = rapl.set_pl2_watts(min_w);
+                    if let Some((min_w, _)) = rapl.pl1_bounds_watts() {
+                        let _ = rapl.set_pl1_watts(min_w);
+                    }
+                    if let Some((min_w, _)) = rapl.pl2_bounds_watts() {
+                        let _ = rapl.set_pl2_watts(min_w);
+                    }
                 }
                 if let Some(gpu) = &self.gpu {
-                    let (min_g, _) = gpu.gpu_bounds().unwrap_or((300, 1100));
-                    let _ = gpu.set_gpu_freq(min_g);
+                    if let Some((min_g, _)) = gpu.discovered_gpu_bounds() {
+                        let _ = gpu.set_gpu_freq(min_g);
+                    }
                 }
                 if let Some(aspm) = &self.aspm {
                     let _ = aspm.set_aspm_policy("powersave");
@@ -157,19 +167,24 @@ impl LinuxBackend {
             }
             PowerProfile::Normal => {
                 let _ = self.cpu.set_online_cores(self.cpu.num_cpus());
-                let (_, max_freq) = self.cpu.freq_bounds().unwrap_or((400, 3500));
-                let _ = self.cpu.set_freq_limit(max_freq);
+                if let Some((_, max_freq)) = self.cpu.discovered_freq_bounds() {
+                    let _ = self.cpu.set_freq_limit(max_freq);
+                }
                 let _ = self.cpu.set_turbo_enabled(true);
                 let _ = self.cpu.set_energy_performance_preference("default");
 
                 if let Some(rapl) = &self.rapl {
-                    let (_, max_w) = rapl.rapl_bounds().unwrap_or((5, 115));
-                    let _ = rapl.set_pl1_watts(max_w);
-                    let _ = rapl.set_pl2_watts(max_w);
+                    if let Some((_, max_w)) = rapl.pl1_bounds_watts() {
+                        let _ = rapl.set_pl1_watts(max_w);
+                    }
+                    if let Some((_, max_w)) = rapl.pl2_bounds_watts() {
+                        let _ = rapl.set_pl2_watts(max_w);
+                    }
                 }
                 if let Some(gpu) = &self.gpu {
-                    let (_, max_g) = gpu.gpu_bounds().unwrap_or((300, 1100));
-                    let _ = gpu.set_gpu_freq(max_g);
+                    if let Some((_, max_g)) = gpu.discovered_gpu_bounds() {
+                        let _ = gpu.set_gpu_freq(max_g);
+                    }
                 }
                 if let Some(aspm) = &self.aspm {
                     let _ = aspm.set_aspm_policy("default");

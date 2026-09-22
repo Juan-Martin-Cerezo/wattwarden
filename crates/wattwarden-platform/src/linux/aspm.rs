@@ -11,6 +11,7 @@
 //! The path is resolved through [`SysfsRoot`] so the whole probe is relocatable.
 
 use crate::linux::sysfs::SysfsRoot;
+use tracing::debug;
 use wattwarden_core::{AspmController, Result, WattWardenError};
 
 const ASPM_POLICY_PATH: &str = "sys/module/pcie_aspm/parameters/policy";
@@ -33,6 +34,27 @@ impl LinuxAspm {
             ));
         }
         Ok(Self { root })
+    }
+
+    /// The policies the kernel advertises, brackets stripped
+    /// (e.g. `default [powersave] performance` -> `default`, `powersave`, `performance`).
+    fn available_policies(&self) -> Vec<String> {
+        self.root
+            .read(ASPM_POLICY_PATH)
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c| c == '[' || c == ']').to_string())
+            .filter(|word| !word.is_empty())
+            .collect()
+    }
+
+    /// Maps a requested policy onto one the kernel advertises. `None` means "do not write".
+    fn resolve_policy(&self, policy: &str) -> Option<String> {
+        let available = self.available_policies();
+        if available.is_empty() || available.iter().any(|a| a == policy) {
+            return Some(policy.to_string());
+        }
+        // Fall back to the kernel default when the request is not offered.
+        available.iter().find(|a| a.as_str() == "default").cloned()
     }
 }
 
@@ -59,7 +81,11 @@ impl AspmController for LinuxAspm {
     }
 
     fn set_aspm_policy(&self, policy: &str) -> Result<()> {
-        self.root.write_best_effort(ASPM_POLICY_PATH, policy);
+        let Some(policy) = self.resolve_policy(policy) else {
+            debug!("ASPM: policy '{policy}' not offered by the kernel; not writing");
+            return Ok(());
+        };
+        self.root.write_best_effort(ASPM_POLICY_PATH, &policy);
         Ok(())
     }
 }
@@ -109,5 +135,20 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         assert!(LinuxAspm::with_root(SysfsRoot::new(dir)).is_err());
+    }
+
+    #[test]
+    fn unadvertised_policy_is_mapped_or_skipped() {
+        // `powersave` requested but the kernel only offers default/performance -> default.
+        let map_root = root("map", "default performance\n");
+        let aspm = LinuxAspm::with_root(map_root.clone()).unwrap();
+        aspm.set_aspm_policy("powersave").unwrap();
+        assert_eq!(map_root.read(ASPM_POLICY_PATH), "default");
+
+        // Nothing sensible to fall back to -> not written.
+        let skip_root = root("skip", "performance\n");
+        let aspm = LinuxAspm::with_root(skip_root.clone()).unwrap();
+        aspm.set_aspm_policy("powersave").unwrap();
+        assert_eq!(skip_root.read(ASPM_POLICY_PATH), "performance");
     }
 }

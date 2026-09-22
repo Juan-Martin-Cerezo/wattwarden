@@ -71,11 +71,31 @@ fn fake_intel_laptop(tag: &str) -> SysfsRoot {
         }
     }
 
-    // --- RAPL: 2 W .. 60 W, constraints por nombre ---
+    // --- RAPL: 2 W .. 60 W, constraints por nombre con su rango propio ---
     write(&root, &format!("{RAPL}/min_power_range_uw"), "2000000\n");
     write(&root, &format!("{RAPL}/max_power_range_uw"), "60000000\n");
     write(&root, &format!("{RAPL}/constraint_0_name"), "long_term\n");
     write(&root, &format!("{RAPL}/constraint_1_name"), "short_term\n");
+    write(
+        &root,
+        &format!("{RAPL}/constraint_0_min_power_uw"),
+        "2000000\n",
+    );
+    write(
+        &root,
+        &format!("{RAPL}/constraint_0_max_power_uw"),
+        "60000000\n",
+    );
+    write(
+        &root,
+        &format!("{RAPL}/constraint_1_min_power_uw"),
+        "2000000\n",
+    );
+    write(
+        &root,
+        &format!("{RAPL}/constraint_1_max_power_uw"),
+        "60000000\n",
+    );
     write(
         &root,
         &format!("{RAPL}/constraint_0_power_limit_uw"),

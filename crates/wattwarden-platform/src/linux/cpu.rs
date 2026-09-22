@@ -17,9 +17,20 @@
 //!   on **all** `cpu*/cpufreq/scaling_governor`
 
 use crate::linux::sysfs::SysfsRoot;
+use tracing::debug;
 use wattwarden_core::{CStateInfo, CStateTelemetry, CpuGovernor, Result, WattWardenError};
 
 const CPU_BASE: &str = "sys/devices/system/cpu";
+
+/// Energy Performance Preference ordering, most performance first. Used to pick the
+/// closest *available* preference when the requested one is not advertised.
+const EPP_ORDER: [&str; 5] = [
+    "performance",
+    "balance_performance",
+    "default",
+    "balance_power",
+    "power",
+];
 
 /// CPU frequency fallback bounds (MHz) — `PARITY.md` §2 / Go `GetCPUFreqBounds`.
 pub const FALLBACK_FREQ_MIN_MHZ: u32 = 400;
@@ -62,6 +73,83 @@ impl LinuxCpuGovernor {
 
     fn cpu_rel(&self, id: u32) -> String {
         format!("{CPU_BASE}/cpu{id}")
+    }
+}
+
+impl LinuxCpuGovernor {
+    /// `(min, max)` MHz actually discovered from `cpu0/cpufreq/cpuinfo_{min,max}_freq`.
+    ///
+    /// `None` when the hardware does not expose a usable range (missing, zero or
+    /// inverted): callers must then **not write** a frequency limit. [`CpuGovernor::freq_bounds`]
+    /// keeps the legacy `400/1600` fallback for display, but every write is gated on
+    /// this discovered range, so no value can ever land outside it.
+    pub fn discovered_freq_bounds(&self) -> Option<(u32, u32)> {
+        let min_khz = self
+            .root
+            .read_i64(&format!("{CPU_BASE}/cpu0/cpufreq/cpuinfo_min_freq"))?;
+        let max_khz = self
+            .root
+            .read_i64(&format!("{CPU_BASE}/cpu0/cpufreq/cpuinfo_max_freq"))?;
+        if min_khz <= 0 || max_khz <= 0 || max_khz < min_khz {
+            return None;
+        }
+        Some(((min_khz / 1000) as u32, (max_khz / 1000) as u32))
+    }
+
+    /// The EPP values the hardware advertises (`energy_performance_available_preferences`).
+    fn available_epp(&self) -> Vec<String> {
+        self.root
+            .read(&format!(
+                "{CPU_BASE}/cpu0/cpufreq/energy_performance_available_preferences"
+            ))
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Maps a requested EPP onto the closest value the hardware actually advertises.
+    ///
+    /// When the hardware does not expose the list there is nothing to choose from and
+    /// the request is passed through unchanged (best effort). A failure to map an
+    /// unknown token yields `None` so the caller writes nothing.
+    fn resolve_epp(&self, pref: &str) -> Option<String> {
+        let available = self.available_epp();
+        if available.is_empty() || available.iter().any(|a| a == pref) {
+            return Some(pref.to_string());
+        }
+        let rank = |s: &str| EPP_ORDER.iter().position(|x| *x == s);
+        let target = rank(pref)?;
+        available
+            .iter()
+            .filter_map(|a| rank(a).map(|r| (r.abs_diff(target), a.clone())))
+            .min_by_key(|(distance, _)| *distance)
+            .map(|(_, candidate)| candidate)
+    }
+
+    /// The governors the hardware advertises (`scaling_available_governors`).
+    fn available_governors(&self) -> Vec<String> {
+        self.root
+            .read(&format!(
+                "{CPU_BASE}/cpu0/cpufreq/scaling_available_governors"
+            ))
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Maps a requested governor onto one the hardware advertises, preferring a
+    /// power-saving replacement. `None` means "do not write".
+    fn resolve_governor(&self, gov: &str) -> Option<String> {
+        let available = self.available_governors();
+        if available.is_empty() || available.iter().any(|a| a == gov) {
+            return Some(gov.to_string());
+        }
+        for fallback in ["powersave", "performance", "schedutil", "ondemand"] {
+            if available.iter().any(|a| a == fallback) {
+                return Some(fallback.to_string());
+            }
+        }
+        None
     }
 }
 
@@ -110,22 +198,11 @@ impl CpuGovernor for LinuxCpuGovernor {
     }
 
     fn freq_bounds(&self) -> Result<(u32, u32)> {
-        let min_khz = self
-            .root
-            .read_i64(&format!("{CPU_BASE}/cpu0/cpufreq/cpuinfo_min_freq"));
-        let max_khz = self
-            .root
-            .read_i64(&format!("{CPU_BASE}/cpu0/cpufreq/cpuinfo_max_freq"));
-
-        // Go: `strconv.Atoi` error -> keep the 400/1600 fallback, and integer-divide by 1000.
-        let min_mhz = min_khz
-            .map(|v| v / 1000)
-            .unwrap_or(FALLBACK_FREQ_MIN_MHZ as i64);
-        let max_mhz = max_khz
-            .map(|v| v / 1000)
-            .unwrap_or(FALLBACK_FREQ_MAX_MHZ as i64);
-
-        Ok((min_mhz.max(0) as u32, max_mhz.max(0) as u32))
+        // The legacy 400/1600 fallback is kept for display/compat only: every write
+        // goes through `discovered_freq_bounds()` and is skipped when it is `None`.
+        Ok(self
+            .discovered_freq_bounds()
+            .unwrap_or((FALLBACK_FREQ_MIN_MHZ, FALLBACK_FREQ_MAX_MHZ)))
     }
 
     fn freq_limit(&self) -> Result<u32> {
@@ -141,7 +218,11 @@ impl CpuGovernor for LinuxCpuGovernor {
     }
 
     fn set_freq_limit(&self, mhz: u32) -> Result<()> {
-        let (min_mhz, max_mhz) = self.freq_bounds()?;
+        // No discovered range -> nothing to clamp against, so nothing is written.
+        let Some((min_mhz, max_mhz)) = self.discovered_freq_bounds() else {
+            debug!("CPU: cpufreq range not discovered; not writing scaling_min/max_freq");
+            return Ok(());
+        };
         let mhz = mhz.clamp(min_mhz, max_mhz);
 
         let khz_max = (mhz as u64) * 1000;
@@ -202,22 +283,31 @@ impl CpuGovernor for LinuxCpuGovernor {
     }
 
     fn set_energy_performance_preference(&self, pref: &str) -> Result<()> {
+        // Only write a preference the hardware actually advertises (or the closest one).
+        let Some(pref) = self.resolve_epp(pref) else {
+            debug!("CPU: EPP '{pref}' not available on this hardware; not writing");
+            return Ok(());
+        };
         for id in self.cpu_ids() {
             let epp = format!("{}/cpufreq/energy_performance_preference", self.cpu_rel(id));
             if self.root.exists(&epp) {
-                self.root.write_best_effort(&epp, pref);
+                self.root.write_best_effort(&epp, &pref);
             }
         }
 
-        let gov = if pref == "performance" {
+        let requested_gov = if pref == "performance" {
             "performance"
         } else {
             "powersave"
         };
+        let Some(gov) = self.resolve_governor(requested_gov) else {
+            debug!("CPU: governor '{requested_gov}' not available on this hardware; not writing");
+            return Ok(());
+        };
         for id in self.cpu_ids() {
             let governor = format!("{}/cpufreq/scaling_governor", self.cpu_rel(id));
             if self.root.exists(&governor) {
-                self.root.write_best_effort(&governor, gov);
+                self.root.write_best_effort(&governor, &gov);
             }
         }
         Ok(())
@@ -267,6 +357,174 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::create_dir_all(&dir);
         SysfsRoot::new(dir)
+    }
+
+    fn write(root: &SysfsRoot, rel: &str, value: &str) {
+        let p = root.path(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, value).unwrap();
+    }
+
+    /// One CPU with `cpufreq` files but no `cpuinfo_*` range -> nothing is written.
+    #[test]
+    fn undiscovered_freq_range_is_never_written() {
+        let root = empty_root("norange");
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/scaling_max_freq"),
+            "800000\n",
+        );
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/scaling_min_freq"),
+            "800000\n",
+        );
+
+        let cpu = LinuxCpuGovernor::with_root(root.clone());
+        assert_eq!(cpu.discovered_freq_bounds(), None);
+        assert_eq!(cpu.freq_bounds().unwrap(), (400, 1600)); // display fallback only
+
+        cpu.set_freq_limit(3000).unwrap();
+        assert_eq!(
+            root.read(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_max_freq")),
+            "800000"
+        );
+        assert_eq!(
+            root.read(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_min_freq")),
+            "800000"
+        );
+    }
+
+    /// Discovered bounds always clamp the write, whatever the caller asks for.
+    #[test]
+    fn discovered_range_clamps_every_write() {
+        let root = empty_root("clamp");
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/cpuinfo_min_freq"),
+            "400000\n",
+        );
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/cpuinfo_max_freq"),
+            "1600000\n",
+        );
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/scaling_max_freq"),
+            "1600000\n",
+        );
+        let cpu = LinuxCpuGovernor::with_root(root.clone());
+        assert_eq!(cpu.discovered_freq_bounds(), Some((400, 1600)));
+
+        cpu.set_freq_limit(99_999).unwrap();
+        assert_eq!(
+            root.read(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_max_freq")),
+            "1600000"
+        );
+        cpu.set_freq_limit(10).unwrap();
+        assert_eq!(
+            root.read(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_max_freq")),
+            "400000"
+        );
+    }
+
+    /// The hardware's own EPP/governor lists decide what is written.
+    #[test]
+    fn epp_and_governor_come_from_the_available_lists() {
+        let root = empty_root("epplist");
+        for i in 0..2 {
+            let base = format!("{CPU_BASE}/cpu{i}");
+            write(
+                &root,
+                &format!("{base}/cpufreq/energy_performance_preference"),
+                "balance_power\n",
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/scaling_governor"),
+                "powersave\n",
+            );
+        }
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/energy_performance_available_preferences"),
+            "default performance balance_performance balance_power power\n",
+        );
+        // Only `powersave` is advertised by this hardware.
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/scaling_available_governors"),
+            "powersave\n",
+        );
+
+        let cpu = LinuxCpuGovernor::with_root(root.clone());
+        // `performance` is available, so both CPUs get it and the governor is derived
+        // from it -- but the hardware only offers `powersave`, so that is written.
+        cpu.set_energy_performance_preference("performance")
+            .unwrap();
+        assert_eq!(
+            root.read(&format!(
+                "{CPU_BASE}/cpu0/cpufreq/energy_performance_preference"
+            )),
+            "performance"
+        );
+        assert_eq!(
+            root.read(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_governor")),
+            "powersave"
+        );
+
+        // A token the hardware never advertises is dropped (nothing written).
+        cpu.set_energy_performance_preference("bogus").unwrap();
+        assert_eq!(
+            root.read(&format!(
+                "{CPU_BASE}/cpu0/cpufreq/energy_performance_preference"
+            )),
+            "performance"
+        );
+    }
+
+    /// When the hardware advertises a reduced EPP list, the closest value wins.
+    #[test]
+    fn epp_falls_back_to_the_closest_available_value() {
+        let root = empty_root("eppnearest");
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/energy_performance_preference"),
+            "default\n",
+        );
+        write(
+            &root,
+            &format!("{CPU_BASE}/cpu0/cpufreq/energy_performance_available_preferences"),
+            "default performance\n",
+        );
+        let cpu = LinuxCpuGovernor::with_root(root.clone());
+
+        // `power` is not offered; `default` is the closest advertised neighbour.
+        cpu.set_energy_performance_preference("power").unwrap();
+        assert_eq!(
+            root.read(&format!(
+                "{CPU_BASE}/cpu0/cpufreq/energy_performance_preference"
+            )),
+            "default"
+        );
+    }
+
+    /// Turbo is only written when one of its interfaces actually exists.
+    #[test]
+    fn turbo_is_only_written_when_an_interface_exists() {
+        let root = empty_root("noturbo");
+        let cpu = LinuxCpuGovernor::with_root(root.clone());
+
+        cpu.set_turbo_enabled(false).unwrap();
+        assert!(!root.exists(&format!("{CPU_BASE}/intel_pstate/no_turbo")));
+        assert!(!root.exists(&format!("{CPU_BASE}/cpufreq/boost")));
+
+        // AMD/generic knob present: only this one is written.
+        write(&root, &format!("{CPU_BASE}/cpufreq/boost"), "1\n");
+        cpu.set_turbo_enabled(false).unwrap();
+        assert_eq!(root.read(&format!("{CPU_BASE}/cpufreq/boost")), "0");
+        assert!(!root.exists(&format!("{CPU_BASE}/intel_pstate/no_turbo")));
     }
 
     #[test]

@@ -14,6 +14,7 @@
 
 use crate::linux::sysfs::SysfsRoot;
 use std::path::PathBuf;
+use tracing::debug;
 use wattwarden_core::{GpuController, Result, WattWardenError};
 
 /// Relative base of the DRM class directory.
@@ -84,6 +85,26 @@ impl LinuxGpu {
                 .write_best_effort_path(&card.join(leaf), &value.to_string());
         }
     }
+
+    /// `(min, max)` MHz actually discovered on the card: `gt_RPn_freq_mhz`/`gt_RP0_freq_mhz`
+    /// when present, else the `gt_min_freq_mhz`/`gt_max_freq_mhz` pair.
+    ///
+    /// `None` when there is no card, one of the bounds is missing, or the range is
+    /// degenerate (`min == max`): callers must then **not write**. [`GpuController::gpu_bounds`]
+    /// keeps the legacy `300/1100` fallback for display, but writes are gated on this.
+    pub fn discovered_gpu_bounds(&self) -> Option<(u32, u32)> {
+        self.card.as_ref()?;
+        let min = self
+            .card_read("gt_RPn_freq_mhz")
+            .or_else(|| self.card_read("gt_min_freq_mhz"))?;
+        let max = self
+            .card_read("gt_RP0_freq_mhz")
+            .or_else(|| self.card_read("gt_max_freq_mhz"))?;
+        if max <= min {
+            return None;
+        }
+        Some((min, max))
+    }
 }
 
 impl GpuController for LinuxGpu {
@@ -111,10 +132,12 @@ impl GpuController for LinuxGpu {
     }
 
     fn set_gpu_freq(&self, mhz: u32) -> Result<()> {
-        if self.card.is_none() {
-            return Ok(()); // Go `SetGPUFreq` returns early when there is no path.
-        }
-        let (min, max) = self.gpu_bounds()?;
+        // No card, a missing bound, or a degenerate range (min == max) -> nothing is
+        // written. The legacy 300/1100 fallback is never used to pick a written value.
+        let Some((min, max)) = self.discovered_gpu_bounds() else {
+            debug!("GPU: no usable frequency range discovered; not writing");
+            return Ok(());
+        };
         let target = mhz.clamp(min, max);
 
         // Order matters: the software minimum first, then the user limit.
@@ -225,6 +248,42 @@ mod tests {
         assert_eq!(
             fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
             "300"
+        );
+    }
+
+    /// A degenerate (`min == max`) or incomplete range must never be written.
+    #[test]
+    fn degenerate_or_incomplete_range_is_never_written() {
+        let (root, card) = card_root(
+            "degenerate",
+            &[
+                ("gt_RPn_freq_mhz", "700\n"),
+                ("gt_RP0_freq_mhz", "700\n"),
+                ("gt_min_freq_mhz", "700\n"),
+                ("gt_max_freq_mhz", "700\n"),
+            ],
+        );
+        let gpu = LinuxGpu::with_root(root).unwrap();
+        assert_eq!(gpu.discovered_gpu_bounds(), None);
+        gpu.set_gpu_freq(900).unwrap();
+        // Untouched: the file still holds the raw kernel content (with its newline).
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "700\n"
+        );
+        assert_eq!(
+            fs::read_to_string(card.join("gt_min_freq_mhz")).unwrap(),
+            "700\n"
+        );
+
+        // Only a max exposed (no min): there is nothing to clamp against.
+        let (root, card) = card_root("onlymax", &[("gt_max_freq_mhz", "1100\n")]);
+        let gpu = LinuxGpu::with_root(root).unwrap();
+        assert_eq!(gpu.discovered_gpu_bounds(), None);
+        gpu.set_gpu_freq(900).unwrap();
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "1100\n"
         );
     }
 }
