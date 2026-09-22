@@ -105,8 +105,11 @@ done
 # Rescatar restos del agente ANTES de verificar: si no, el trabajo queda sin commitear y
 # la ronda da rojo por higiene del repo (paso el 22/09 con config.rs + daemon.rs, 796 lineas).
 if [ -n "$(git status --porcelain)" ]; then
-  git add -u && git commit -q -m "wip(delegacion): restos del agente sin commitear (rescatados por el runner)"
+  git add -A && git commit -q -m "wip(delegacion): restos del agente sin commitear (rescatados por el runner)"
   log "restos del agente rescatados en $(git rev-parse --short HEAD)"
+  # Si queda algo sucio igual (p.ej. un archivo ignorado por .gitignore pero listado),
+  # que se vea en el log: es la causa de un falso rojo que ya nos costo una ronda.
+  [ -n "$(git status --porcelain)" ] && log "OJO: queda sucio pese al rescate: $(git status --porcelain | head -3 | tr '\n' ' ')"
 fi
 
 log "=== verificación ==="
