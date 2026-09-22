@@ -13,6 +13,7 @@ const ASCII_LOGO: &[&str] = &[
     r#"  \ \ /\ / / _ \ | |   | |  \ \ /\ / / _ \ | |_) | | | |  _| |  \| |"#,
     r#"   \ V  V / ___ \| |   | |   \ V  V / ___ \|  _ <| |_| | |___| |\  |"#,
     r#"    \_/\_/_/   \_\_|   |_|    \_/\_/_/   \_\_| \_\____/|_____|_| \_|"#,
+    r#"                                                                    "#,
 ];
 
 const BLOCKS: [char; 9] = [' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -44,7 +45,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // 1. Draw Centered ASCII Banner
     let art_y = 1;
-    let art_x = (w.saturating_sub(68)) / 2;
+    let mut art_x = (w.saturating_sub(68)) / 2;
+    if art_x < 1 {
+        art_x = 1;
+    }
     let title_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
@@ -91,11 +95,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let (menu_x, menu_y, menu_w, graph_x, graph_y, graph_w, graph_h) = if is_horizontal {
         let mx = 4;
         let my = info_y + 2;
-        let mw = 52;
+        let mw = 50;
         let gx = mx + mw + 4;
         let gy = info_y + 2;
         let gw = w.saturating_sub(gx + 4);
-        let gh = h.saturating_sub(gy + 9).max(6);
+        let gh = h.saturating_sub(gy + 4);
         (mx, my, mw, gx, gy, gw, gh)
     } else {
         let gx = 4;
@@ -103,11 +107,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let gw = w.saturating_sub(8);
         let needed_for_menu = app.items.len();
         let available = h.saturating_sub(gy + 4);
-        let gh = if available > needed_for_menu + 10 {
-            (available - needed_for_menu).min(12)
+        let mut gh = if available > needed_for_menu + 10 {
+            available - needed_for_menu
         } else {
             8
         };
+        if gh > 15 {
+            gh = 15;
+        }
         let mx = 4;
         let my = gy + gh + 2;
         let mw = w.saturating_sub(8);
@@ -117,15 +124,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // 4. Draw Real-Time Bar Graph
     draw_bar_graph(buf, graph_x, graph_y, graph_w, graph_h, &app.history, 15.0);
 
-    // 5. Draw C-States Telemetry (in wide mode below graph)
-    if is_horizontal {
-        draw_cstates(buf, graph_x, graph_y + graph_h + 2, graph_w, app);
-    }
-
-    // 6. Draw Menu with Viewport Scrolling and Scrollbar
+    // 5. Draw Menu with Viewport Scrolling and Scrollbar
     draw_menu(buf, app, menu_x, menu_y, menu_w, h);
 
-    // 7. Draw Toast Popup (if active)
+    // 6. Draw Toast Popup (if active)
     if let Some((msg, time)) = &app.toast {
         if time.elapsed() < Duration::from_secs(3) {
             let toast_str = format!(" {} ", msg);
@@ -144,12 +146,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // 8. Draw Extreme Mode Confirmation Modal
+    // 7. Draw Extreme Mode Confirmation Modal
     if app.confirm_extreme {
         draw_extreme_modal(buf, w, h);
     }
 
-    // 9. Draw Footer Controls Help
+    // 8. Draw Footer Controls Help
     let footer_text = "[UP/DOWN] Navigate | [L/R] Adjust | [ENTER] Apply | [R] Restore | [Q] Quit";
     set_str(
         buf,
@@ -221,9 +223,9 @@ fn draw_bar_graph(
             let char_idx = if dots_in_row >= 8 { 8 } else { dots_in_row };
 
             if char_idx > 0 {
-                let color = if y_offset >= height.saturating_sub(2) {
+                let color = if y_offset > height.saturating_sub(2) {
                     Color::Red
-                } else if y_offset >= height / 2 {
+                } else if y_offset > height / 2 {
                     Color::Yellow
                 } else {
                     Color::Green
@@ -271,52 +273,12 @@ fn draw_bar_graph(
     }
 }
 
-fn draw_cstates(buf: &mut Buffer, x: usize, y: usize, width: usize, app: &App) {
-    let header_line = format!(
-        "─── [ CPU C-STATE RESIDENCY ] {}",
-        "─".repeat(width.saturating_sub(32))
-    );
-    set_str(
-        buf,
-        x,
-        y,
-        &header_line,
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let cstates = app.backend.cpu.cstates().unwrap_or_default();
-    if cstates.is_empty() {
-        set_str(
-            buf,
-            x + 2,
-            y + 2,
-            "No cpuidle C-state telemetry detected",
-            Style::default().fg(Color::DarkGray),
-        );
-        return;
-    }
-
-    let mut col_offset = 0;
-    let mut row_offset = 2;
-
-    for (i, state) in cstates.iter().take(8).enumerate() {
-        let time_ms = state.time_microseconds / 1000;
-        let item_str = format!("{:<4}: {:>7}ms", state.name, time_ms);
-        set_str(
-            buf,
-            x + col_offset,
-            y + row_offset,
-            &item_str,
-            Style::default().fg(Color::LightGreen),
-        );
-
-        col_offset += 18;
-        if (i + 1) % 3 == 0 {
-            col_offset = 0;
-            row_offset += 1;
-        }
+/// Go renders boolean rows as `[ACTIVE]`/`[OFF]`, never `[true]`/`[false]`.
+fn display_bool(value: bool) -> String {
+    if value {
+        "[ACTIVE]".into()
+    } else {
+        "[OFF]".into()
     }
 }
 
@@ -343,12 +305,13 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ),
         ActionItem::ProfileAutoExtreme => (
             "⚡ Auto Extreme Mode",
-            if app.config.profile == PowerProfile::AutoExtreme {
+            // Go derives this from the real daemon state, not from `config.profile`.
+            if app.is_daemon_active() {
                 "[ACTIVE]".into()
             } else {
                 "[EXECUTE]".into()
             },
-            app.config.profile == PowerProfile::AutoExtreme,
+            app.is_daemon_active(),
         ),
         ActionItem::AutoExtremeLevel => (
             "Auto Extreme Level",
@@ -430,7 +393,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         }
         ActionItem::Turbo => {
             let t = app.backend.cpu.turbo_enabled().unwrap_or(false);
-            ("Turbo Boost", format!("[{}]", t), t)
+            ("Turbo Boost", display_bool(t), t)
         }
         ActionItem::Epp => {
             let epp = app
@@ -460,38 +423,40 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         }
         ActionItem::KbdBacklight => {
             let k = app.backend.peripherals.kbd_backlight().unwrap_or(false);
-            ("Keyboard Light", format!("[{}]", k), k)
+            ("Keyboard Light", display_bool(k), k)
         }
         ActionItem::Bluetooth => {
             let bt = app.backend.peripherals.bluetooth_enabled().unwrap_or(false);
-            ("Bluetooth", format!("[{}]", bt), bt)
+            ("Bluetooth", display_bool(bt), bt)
         }
         ActionItem::WifiEnable => {
             let w = app.backend.peripherals.wifi_enabled().unwrap_or(false);
-            ("WiFi Enable", format!("[{}]", w), w)
-        }
-        ActionItem::ChargeLimit => {
-            let t = app.backend.threshold.charge_threshold().unwrap_or(80);
-            ("BMS Battery Charge Ceiling", format!("[{}%]", t), false)
+            ("WiFi Enable", display_bool(w), w)
         }
         ActionItem::WifiPowerSave => {
             let ps = app.backend.tweaks.wifi_power_save().unwrap_or(false);
-            ("WiFi Power Save", format!("[{}]", ps), ps)
+            ("WiFi Power Save", display_bool(ps), ps)
         }
         ActionItem::AudioPowerSave => {
             let aps = app.backend.tweaks.audio_power_save().unwrap_or(false);
-            ("Audio Power Save", format!("[{}]", aps), aps)
+            ("Audio Power Save", display_bool(aps), aps)
         }
         ActionItem::Autosuspend => {
             let a = app.backend.tweaks.autosuspend().unwrap_or(false);
-            ("Autosuspend PCI/USB", format!("[{}]", a), a)
+            ("Autosuspend PCI/USB", display_bool(a), a)
         }
         ActionItem::Watchdog => {
             let wd = app.backend.tweaks.nmi_watchdog().unwrap_or(false);
-            ("Watchdog Kernel", format!("[{}]", wd), wd)
+            ("Watchdog Kernel", display_bool(wd), wd)
         }
         ActionItem::VmWriteback => {
-            let wb = app.backend.tweaks.vm_writeback_seconds().unwrap_or(5);
+            // Go `GetVMWriteback()` returns the raw centisecond value, hence the
+            // screen shows 500 (not 5) with the legacy "(s)" label.
+            let wb = app
+                .backend
+                .root()
+                .read_i64("proc/sys/vm/dirty_writeback_centisecs")
+                .unwrap_or(0);
             ("VM Writeback (s)", format!("[{}]", wb), false)
         }
         ActionItem::ProcessPurge => ("Process Purge", "[EXECUTE]".into(), false),
@@ -723,7 +688,11 @@ fn draw_extreme_modal(buf: &mut Buffer, w: usize, h: usize) {
     ];
 
     for (row_offset, text, style) in lines {
-        let text_x = box_x + (box_w.saturating_sub(text.chars().count())) / 2;
+        let mut text_x = box_x + (box_w.saturating_sub(text.chars().count())) / 2;
+        if row_offset == 1 {
+            // Go shifts the warning title by one column to compensate for the emoji.
+            text_x += 1;
+        }
         set_str(buf, text_x, box_y + row_offset, text, style);
     }
 }

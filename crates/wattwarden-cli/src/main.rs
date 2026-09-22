@@ -1,471 +1,202 @@
+mod cli;
 mod privilege;
+mod service;
 
-use clap::{Parser, Subcommand};
-use privilege::{is_root, require_root};
+use cli::{run, CliRuntime};
+use std::io::Write;
+use std::path::Path;
 use std::process::Command;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use wattwarden_core::*;
-use wattwarden_daemon::{
-    install_systemd_service, uninstall_systemd_service, DaemonRunner, PidManager,
-};
+use wattwarden_core::Config;
+use wattwarden_daemon::{DaemonRunner, PidManager};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 use wattwarden_tui::{run_tui, App};
 
-#[derive(Parser)]
-#[command(
-    name = "wattwarden",
-    author = "Juan Martín Cerezo",
-    version = "2.0.0",
-    about = "⚡ WattWarden - Industrial Hardware Power & Auto-Brightness Suite (Rust)",
-    long_about = "WattWarden gives you absolute ownership over your hardware's power constraints via direct sysfs, RAPL, and zero-polling Linux Netlink event loops."
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Launch the interactive TUI Dashboard (Default)
-    Tui,
-
-    /// Run background daemon in the foreground (used by systemd)
-    Daemon,
-
-    /// Start the background daemon service
-    Start,
-
-    /// Stop the running background daemon service
-    Stop,
-
-    /// Inspect current daemon status, battery drain, and profile
-    Status,
-
-    /// Apply and persist a power profile (normal, performance, extreme, auto)
-    Profile {
-        /// Target profile name
-        name: String,
-    },
-
-    /// Set the Auto Extreme adaptive level (low, medium, high)
-    Level {
-        /// Target level name
-        name: String,
-    },
-
-    /// Set battery BMS charge threshold ceiling (e.g. 80%)
-    Threshold {
-        /// Charge percentage ceiling [50-100]
-        percent: u8,
-    },
-
-    /// Configure display brightness percentage or auto-brightness toggle
-    Brightness {
-        /// Target percentage (1-100) or 'on'/'off'
-        value: String,
-    },
-
-    /// System service management
-    Service {
-        #[command(subcommand)]
-        action: ServiceAction,
-    },
-}
-
-#[derive(Subcommand)]
-enum ServiceAction {
-    /// Install & enable auto-starting systemd service
-    Install,
-    /// Disable and remove systemd service
-    Uninstall,
-}
-
-fn sync_installed_binary() {
-    if !is_root() {
-        return;
+/// Go `service.IsDaemonActive()`: PID file alive, else `systemctl is-active`.
+fn daemon_active() -> bool {
+    if PidManager::new().is_running() {
+        return true;
     }
-    let Ok(current_exe) = std::env::current_exe() else {
-        return;
-    };
-    let target = std::path::Path::new("/usr/local/bin/wattwarden");
-    if current_exe == target {
-        return;
-    }
-    if let Ok(bytes) = std::fs::read(&current_exe) {
-        let _ = std::fs::create_dir_all("/usr/local/bin");
-        if std::fs::write(target, bytes).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o755));
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(out) = Command::new("systemctl")
+            .args(["is-active", "wattwarden.service"])
+            .output()
+        {
+            if String::from_utf8_lossy(&out.stdout).trim() == "active" {
+                return true;
             }
         }
     }
+    false
 }
 
-pub fn normalize_args(raw_args: &[String]) -> Vec<String> {
-    if raw_args.is_empty() {
-        return vec![];
-    }
-    let mut normalized = vec![raw_args[0].clone()];
-    let mut i = 1;
-    while i < raw_args.len() {
-        match raw_args[i].as_str() {
-            "--daemon" => normalized.push("daemon".into()),
-            "--start" => normalized.push("start".into()),
-            "--stop" => normalized.push("stop".into()),
-            "--status" => normalized.push("status".into()),
-            "--brightness" => normalized.push("brightness".into()),
-            "--install-service" | "install-service" => {
-                normalized.push("service".into());
-                normalized.push("install".into());
-            }
-            "--uninstall-service" | "uninstall-service" => {
-                normalized.push("service".into());
-                normalized.push("uninstall".into());
-            }
-            other => normalized.push(other.into()),
-        }
-        i += 1;
-    }
-    normalized
-}
+/// Go `service.StartBackgroundDaemon`.
+fn start_background_daemon() -> Result<(), String> {
+    service::sync_installed_binary();
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    sync_installed_binary();
+    let mut cfg = Config::load_or_default(None);
+    cfg.auto_extreme_enabled = true;
+    let _ = cfg.save(None);
 
-    let raw_args: Vec<String> = std::env::args().collect();
-    let normalized = normalize_args(&raw_args);
-    let cli = Cli::parse_from(normalized);
-
-    // Default to TUI if no subcommand provided
-    let cmd = cli.command.unwrap_or(Commands::Tui);
-
-    match cmd {
-        Commands::Tui => {
-            if !is_root() {
-                eprintln!("Warning: Running without root privileges. Some hardware controls will be read-only.");
-            }
-            let backend = LinuxBackend::new()?;
-            let config = Config::load_or_default(None);
-            let app = App::new(backend, config);
-            run_tui(app)?;
-        }
-
-        Commands::Daemon => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            tracing_subscriber::registry()
-                .with(tracing_subscriber::EnvFilter::new("info"))
-                .with(tracing_subscriber::fmt::layer())
-                .init();
-
-            let backend = LinuxBackend::new()?;
-            let config = Config::load_or_default(None);
-            let runner = DaemonRunner::new(backend, config);
-            runner.run().await?;
-        }
-
-        Commands::Start => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            let pid_mgr = PidManager::new();
-            if pid_mgr.is_running() {
-                println!(
-                    "⚡ WattWarden daemon is already running (PID: {}).",
-                    pid_mgr.read_pid().unwrap_or(0)
-                );
+    #[cfg(target_os = "linux")]
+    {
+        if Path::new("/etc/systemd/system/wattwarden.service").exists() {
+            let _ = Command::new("systemctl")
+                .args(["restart", "wattwarden.service"])
+                .status();
+            if daemon_active() {
                 return Ok(());
             }
-
-            // Spawn background process
-            let current_exe = std::env::current_exe()?;
-            let child = Command::new(current_exe).arg("daemon").spawn()?;
-
-            println!(
-                "⚡ WattWarden background daemon started with PID {}.",
-                child.id()
-            );
-        }
-
-        Commands::Stop => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            let pid_mgr = PidManager::new();
-            if let Some(pid) = pid_mgr.read_pid() {
-                #[cfg(unix)]
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGTERM,
-                );
-                #[cfg(not(unix))]
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .status();
-                pid_mgr.release();
-                println!("🛑 WattWarden daemon (PID {}) stopped.", pid);
-            } else {
-                println!("WattWarden daemon is not currently active.");
-            }
-        }
-
-        Commands::Status => {
-            let pid_mgr = PidManager::new();
-            let is_active = pid_mgr.is_running();
-            let backend = LinuxBackend::new().ok();
-            let config = Config::load_or_default(None);
-
-            println!("⚡ WattWarden System Status");
-            println!("──────────────────────────────────────────");
-            println!(
-                "Daemon Status     : {}",
-                if is_active {
-                    "[ACTIVE] (Running in background)"
-                } else {
-                    "[INACTIVE]"
-                }
-            );
-            if let Some(pid) = pid_mgr.read_pid() {
-                println!("Daemon PID        : {}", pid);
-            }
-            println!("Active Profile    : {}", config.profile);
-            println!("Auto Extr. Level  : {}", config.auto_extreme_level);
-            println!(
-                "Auto-Brightness   : {}",
-                if config.auto_brightness {
-                    "Enabled"
-                } else {
-                    "Disabled"
-                }
-            );
-
-            if let Some(b) = backend {
-                let caps = b.capabilities();
-                let chassis = if caps.has_battery {
-                    "Laptop / Portable"
-                } else {
-                    "Desktop / Stationary Workstation"
-                };
-                println!("Chassis Type      : {}", chassis);
-
-                if caps.has_battery {
-                    if let Ok(pct) = b.battery.battery_percentage() {
-                        let is_ac = b.battery.is_charging().unwrap_or(false);
-                        let watts = b.battery.consumption_watts().unwrap_or(0.0);
-                        println!(
-                            "Battery Capacity  : {}% ({})",
-                            pct,
-                            if is_ac { "AC Connected" } else { "On Battery" }
-                        );
-                        println!("Discharge Rate    : {:.2} Watts", watts);
-                    }
-                    if b.threshold.supports_threshold() {
-                        if let Ok(limit) = b.threshold.charge_threshold() {
-                            println!("BMS Charge Ceiling: {}%", limit);
-                        }
-                    }
-                } else {
-                    println!("Power Source      : AC Mains (Stationary)");
-                }
-            }
-        }
-
-        Commands::Profile { name } => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            let profile: PowerProfile = name.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
-            let backend = LinuxBackend::new()?;
-            backend.apply_profile(&profile)?;
-
-            let mut cfg = Config::load_or_default(None);
-            cfg.profile = profile.clone();
-            cfg.auto_extreme_enabled = profile == PowerProfile::AutoExtreme;
-            cfg.save(None)?;
-
-            println!("✅ Power profile updated and persisted to: {}", profile);
-        }
-
-        Commands::Level { name } => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            let level: AutoExtremeLevel = name.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            let mut cfg = Config::load_or_default(None);
-            cfg.auto_extreme_level = level;
-            cfg.save(None)?;
-
-            println!("✅ Auto Extreme level updated and persisted to: {}", level);
-        }
-
-        Commands::Threshold { percent } => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            let backend = LinuxBackend::new()?;
-            if !backend.threshold.supports_threshold() {
-                eprintln!("Error: Your hardware does not support setting battery charge limits.");
-                std::process::exit(1);
-            }
-            backend.threshold.set_charge_threshold(percent)?;
-
-            let mut cfg = Config::load_or_default(None);
-            cfg.battery_charge_limit = Some(percent);
-            cfg.save(None)?;
-
-            println!(
-                "✅ Battery charge ceiling set to {}%. Charging will stop at this threshold.",
-                percent
-            );
-        }
-
-        Commands::Brightness { value } => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            let mut cfg = Config::load_or_default(None);
-            let backend = LinuxBackend::new()?;
-
-            match value.to_lowercase().as_str() {
-                "on" | "1" | "enable" => {
-                    cfg.auto_brightness = true;
-                    cfg.save(None)?;
-                    println!("✅ Dynamic auto-brightness enabled.");
-                }
-                "off" | "0" | "disable" => {
-                    cfg.auto_brightness = false;
-                    cfg.save(None)?;
-                    println!("🛑 Dynamic auto-brightness disabled.");
-                }
-                digits => {
-                    let pct: u8 = digits.parse().map_err(|_| {
-                        anyhow::anyhow!("Invalid brightness percentage: {}", digits)
-                    })?;
-                    if let Some(bl) = &backend.backlight {
-                        bl.set_brightness_percent(pct)?;
-                        println!("Display brightness set to {}%.", pct);
-                    } else {
-                        eprintln!("Error: No controllable backlight interface found.");
-                    }
-                }
-            }
-        }
-
-        Commands::Service { action } => {
-            if let Err(e) = require_root() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-            match action {
-                ServiceAction::Install => {
-                    let current_exe = std::env::current_exe()?;
-                    install_systemd_service(&current_exe)?;
-                    println!("✅ WattWarden systemd service installed and enabled successfully.");
-                }
-                ServiceAction::Uninstall => {
-                    uninstall_systemd_service()?;
-                    println!("🛑 WattWarden systemd service uninstalled.");
-                }
-            }
         }
     }
 
+    if daemon_active() {
+        return Ok(());
+    }
+
+    // Go also starts an in-process loop; here the detached daemon process is the
+    // durable equivalent (the foreground CLI exits immediately after this returns).
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).arg("--daemon").spawn();
+    }
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Go `service.StopBackgroundDaemon`.
+fn stop_background_daemon() {
+    let mut cfg = Config::load_or_default(None);
+    cfg.auto_extreme_enabled = false;
+    let _ = cfg.save(None);
 
-    #[test]
-    fn test_normalize_args() {
-        let args = vec![
-            "wattwarden".into(),
-            "--status".into(),
-            "--daemon".into(),
-            "--install-service".into(),
-        ];
-        let normalized = normalize_args(&args);
-        assert_eq!(
-            normalized,
-            vec!["wattwarden", "status", "daemon", "service", "install"]
-        );
-
-        let uninst = vec!["wattwarden".into(), "--uninstall-service".into()];
-        assert_eq!(
-            normalize_args(&uninst),
-            vec!["wattwarden", "service", "uninstall"]
-        );
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("systemctl")
+            .args(["stop", "wattwarden.service"])
+            .status();
     }
 
-    #[test]
-    fn test_cli_parsing_subcommands() {
-        // TUI default
-        let cli = Cli::try_parse_from(["wattwarden"]).unwrap();
-        assert!(cli.command.is_none());
-
-        // Status
-        let cli = Cli::try_parse_from(["wattwarden", "status"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Status)));
-
-        // Profile
-        let cli = Cli::try_parse_from(["wattwarden", "profile", "extreme"]).unwrap();
-        if let Some(Commands::Profile { name }) = cli.command {
-            assert_eq!(name, "extreme");
-        } else {
-            panic!("Expected Commands::Profile");
+    let pid = PidManager::new();
+    if let Some(p) = pid.read_pid() {
+        #[cfg(unix)]
+        {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(p),
+                nix::sys::signal::Signal::SIGTERM,
+            );
         }
-
-        // Level
-        let cli = Cli::try_parse_from(["wattwarden", "level", "low"]).unwrap();
-        if let Some(Commands::Level { name }) = cli.command {
-            assert_eq!(name, "low");
-        } else {
-            panic!("Expected Commands::Level");
+        #[cfg(not(unix))]
+        {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &p.to_string()])
+                .status();
         }
-
-        // Threshold
-        let cli = Cli::try_parse_from(["wattwarden", "threshold", "80"]).unwrap();
-        if let Some(Commands::Threshold { percent }) = cli.command {
-            assert_eq!(percent, 80);
-        } else {
-            panic!("Expected Commands::Threshold");
-        }
-
-        // Brightness
-        let cli = Cli::try_parse_from(["wattwarden", "brightness", "off"]).unwrap();
-        if let Some(Commands::Brightness { value }) = cli.command {
-            assert_eq!(value, "off");
-        } else {
-            panic!("Expected Commands::Brightness");
-        }
-
-        // Service install
-        let cli = Cli::try_parse_from(["wattwarden", "service", "install"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Service {
-                action: ServiceAction::Install
-            })
-        ));
-
-        // Start & Stop
-        let cli = Cli::try_parse_from(["wattwarden", "start"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Start)));
-
-        let cli = Cli::try_parse_from(["wattwarden", "stop"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Stop)));
     }
+    pid.release();
+}
+
+/// Builds the backend, degrading gracefully instead of aborting the process
+/// (`AGENTS.md`: the app must boot on a desktop/server/Pi/container). If the primary
+/// probe chain cannot initialize, we relocate it to an empty root so every control
+/// reports its `N/A`/fallback value rather than killing the app.
+fn build_backend() -> Result<LinuxBackend, String> {
+    match LinuxBackend::new() {
+        Ok(b) => Ok(b),
+        Err(e) => {
+            eprintln!("Warning: hardware backend initialization failed: {e}");
+            eprintln!(
+                "Warning: continuing with a degraded fallback backend (controls report N/A)."
+            );
+            #[cfg(target_os = "linux")]
+            {
+                LinuxBackend::with_root(wattwarden_platform::SysfsRoot::new(
+                    "/nonexistent/wattwarden-fallback",
+                ))
+                .map_err(|_| "No backend implementation available for this OS.".to_string())
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err("No backend implementation available for this OS.".to_string())
+            }
+        }
+    }
+}
+
+/// Go `service.RunDaemon`.
+fn run_daemon() -> Result<(), String> {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new("info"))
+        .with(tracing_subscriber::fmt::layer())
+        .try_init()
+        .ok();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    runtime.block_on(async {
+        let backend = build_backend()?;
+        let config = Config::load_or_default(None);
+        DaemonRunner::new(backend, config)
+            .run()
+            .await
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// Go `ui.StartDashboard`.
+fn launch_dashboard() -> Result<(), String> {
+    let backend = build_backend()?;
+    let config = Config::load_or_default(None);
+    let app = App::new(backend, config);
+    run_tui(app).map_err(|e| e.to_string())
+}
+
+struct RealRuntime;
+
+impl CliRuntime for RealRuntime {
+    fn is_root(&self) -> bool {
+        privilege::is_root()
+    }
+    fn daemon_active(&self) -> bool {
+        daemon_active()
+    }
+    fn auto_brightness(&self) -> bool {
+        Config::load_or_default(None).auto_brightness
+    }
+    fn set_auto_brightness(&self, enabled: bool) {
+        let mut cfg = Config::load_or_default(None);
+        cfg.auto_brightness = enabled;
+        let _ = cfg.save(None);
+    }
+    fn sync_installed_binary(&self) {
+        service::sync_installed_binary();
+    }
+    fn start_background_daemon(&self) -> Result<(), String> {
+        start_background_daemon()
+    }
+    fn stop_background_daemon(&self) {
+        stop_background_daemon();
+    }
+    fn install_service(&self) -> Result<(), String> {
+        service::install_service()
+    }
+    fn uninstall_service(&self) -> Result<(), String> {
+        service::uninstall_service()
+    }
+    fn run_daemon(&self) -> Result<(), String> {
+        run_daemon()
+    }
+    fn launch_dashboard(&self) -> Result<(), String> {
+        launch_dashboard()
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let mut out = std::io::stdout();
+    let code = run(&args, &mut out, &RealRuntime);
+    let _ = out.flush();
+    std::process::exit(code);
 }

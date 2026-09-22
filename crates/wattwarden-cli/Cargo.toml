@@ -16,8 +16,6 @@ wattwarden-core = { path = "../wattwarden-core" }
 wattwarden-platform = { path = "../wattwarden-platform" }
 wattwarden-daemon = { path = "../wattwarden-daemon" }
 wattwarden-tui = { path = "../wattwarden-tui" }
-clap = { workspace = true, features = ["derive"] }
-anyhow.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
