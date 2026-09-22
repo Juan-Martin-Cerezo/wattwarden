@@ -21,6 +21,9 @@ CC="$(command -v command-code)"
 
 has_flag() { "$1" --help 2>&1 | grep -q -- "$2"; }
 
+# Cuenta SOLO commits del agente: los de orquestacion (mios) no valen como trabajo.
+agent_commits() { git log --format=%s "$1"..HEAD | grep -vcE '^(docs|chore)\(delegacion\)|^fix\(parity\): evidencia|^feat\(parity\): contrato'; }
+
 # ---------- preparación: rama + baseline commiteado ----------
 git rev-parse --verify "$BRANCH" >/dev/null 2>&1 || git checkout -q -B "$BRANCH"
 git rev-parse --abbrev-ref HEAD | grep -qx "$BRANCH" || git checkout -q "$BRANCH"
@@ -32,6 +35,7 @@ git pull -q --ff-only 2>/dev/null
 
 { echo "--- agy"; "$AGY" --version; echo "--- cc"; "$CC" --version; } >>"$LOG" 2>&1
 BASE="$(git rev-parse HEAD)"
+touch "$CACHE/RUNNING"
 log "BASE=$BASE  rama=$BRANCH"
 
 baseline_test() { cargo test --workspace >/dev/null 2>&1; echo $?; }
@@ -46,8 +50,8 @@ has_flag "$AGY" --effort && AGY_ARGS+=(--effort high)
 has_flag "$AGY" --print-timeout && AGY_ARGS+=(--print-timeout 60m)
 [ "${SKIP_PM:-0}" = "1" ] || timeout 3900 "$AGY" "${AGY_ARGS[@]}" >>"$LOG" 2>&1
 AGY_EXIT=$?
-NEW_PM=$(git rev-list "$BASE"..HEAD --count)
-log "agy exit=$AGY_EXIT commits_nuevos=$NEW_PM"
+NEW_PM=$(agent_commits "$BASE")
+log "agy exit=$AGY_EXIT commits_agente=$NEW_PM"
 
 # nudge si el PM no dejó commits (patrón conocido: agy sale sin trabajar)
 for i in 1 2; do
@@ -70,8 +74,8 @@ CC_ARGS=(-p "$(cat "$PROMPT_JUNIOR")" --trust --dangerously-skip-permissions --t
 has_flag "$CC" --skip-onboarding && CC_ARGS+=(--skip-onboarding)
 timeout 3900 "$CC" "${CC_ARGS[@]}" >>"$LOG" 2>&1
 CC_EXIT=$?
-NEW_JR=$(git rev-list "$MID"..HEAD --count)
-log "command-code exit=$CC_EXIT commits_nuevos=$NEW_JR"
+NEW_JR=$(agent_commits "$MID")
+log "command-code exit=$CC_EXIT commits_agente=$NEW_JR"
 
 for i in 1 2; do
   [ "$NEW_JR" -gt 0 ] && break
@@ -97,9 +101,10 @@ ROJO=""
 [ "$TEST"  != 0 ] && ROJO="$ROJO test"
 [ "$CLIPPY" != 0 ] && ROJO="$ROJO clippy"
 [ "$DIRTY" != 0 ] && ROJO="$ROJO arbol_sucio($DIRTY)"
-[ "$TOTAL" = 0 ] && ROJO="$ROJO cero_commits"
+[ "$NEW_PM" = 0 ] && [ "$NEW_JR" = 0 ] && ROJO="$ROJO cero_commits_agente"
 
 echo "round=$TS base=$BASE total_commits=$TOTAL pm_commits=$NEW_PM jr_commits=$NEW_JR fmt=$FMT_C build=$BUILD test=$TEST clippy=$CLIPPY dirty=$DIRTY" > "$CACHE/last-summary"
+rm -f "$CACHE/RUNNING"
 
 if [ -n "$ROJO" ]; then
   echo "ROJO:$ROJO" > "$CACHE/BLOCKED"
