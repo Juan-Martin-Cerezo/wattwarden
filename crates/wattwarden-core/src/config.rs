@@ -114,7 +114,7 @@ impl AutoExtremeLevel {
                 idle_cores: (ncpu / 2).max(2),
                 epp_idle: "power",
                 epp_load: "power",
-                turbo_from: 0.5,
+                turbo_from: 0.67,
                 manage_power_hints: true,
                 brightness_delta: 10,
             },
@@ -123,7 +123,7 @@ impl AutoExtremeLevel {
                 idle_cores: 0,
                 epp_idle: "balance_power",
                 epp_load: "balance_performance",
-                turbo_from: 0.0,
+                turbo_from: 0.33,
                 manage_power_hints: true,
                 brightness_delta: 20,
             },
@@ -296,8 +296,8 @@ mod tests {
         assert_eq!(effective_cores(low), ncpu);
 
         assert_eq!(high.turbo_from, 0.8);
-        assert_eq!(medium.turbo_from, 0.5);
-        assert_eq!(low.turbo_from, 0.0);
+        assert_eq!(medium.turbo_from, 0.67);
+        assert_eq!(low.turbo_from, 0.33);
 
         assert_eq!(high.epp_idle, "power");
         assert_eq!(low.epp_idle, "balance_power");

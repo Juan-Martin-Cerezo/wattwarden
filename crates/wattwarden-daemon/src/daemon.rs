@@ -10,6 +10,7 @@ use wattwarden_platform::linux::LinuxBackend;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogicStepResult {
     pub is_charging: bool,
+    pub applied: bool,
     pub discrete_power: f64,
     pub target_cores: usize,
     pub target_freq: u32,
@@ -117,19 +118,8 @@ impl DaemonRunner {
             return None;
         }
 
-        let is_charging = self.backend.battery.is_charging().unwrap_or(false);
-        if is_charging {
-            if let Some(bl) = &self.backend.backlight {
-                let current = bl.brightness_percent().unwrap_or(100);
-                if current < 80 {
-                    let _ = bl.set_brightness_percent(100);
-                    self.last_applied_brightness.store(100, Ordering::Relaxed);
-                    return Some(100);
-                }
-            }
-            return None;
-        }
-
+        // Juan: brightness follows the user's auto-brightness setting, never the
+        // cable. No 100 % forcing when plugged in.
         let active_class = match active_class_override {
             Some(c) => c.to_lowercase(),
             None => self.active_window_class(),
@@ -190,141 +180,122 @@ impl DaemonRunner {
     }
 
     pub fn apply_logic_step(&self, config: &Config) -> LogicStepResult {
+        // Juan: the ladder follows the USER flag, never the cable. `is_charging`
+        // is still read (UI display + charge threshold stay), but it no longer
+        // picks a branch. Disabled mode = respect the config profile: touch nothing.
         let is_charging = self.backend.battery.is_charging().unwrap_or(false);
         let ncpu = self.backend.cpu.num_cpus().max(1);
 
-        if is_charging {
-            // Plugged in (AC): baseline of performance — Go backend_linux.go:919-935
-            let _ = self.backend.cpu.set_online_cores(ncpu);
-            let _ = self.backend.cpu.set_freq_limit(99_999);
-            if let Some(rapl) = &self.backend.rapl {
-                let _ = rapl.set_pl1_watts(115);
-                let _ = rapl.set_pl2_watts(115);
-            }
-            let _ = self.backend.cpu.set_turbo_enabled(true);
-            let _ = self
-                .backend
-                .cpu
-                .set_energy_performance_preference("performance");
-            if let Some(gpu) = &self.backend.gpu {
-                let _ = gpu.set_gpu_freq(99_999);
-            }
-            if let Some(aspm) = &self.backend.aspm {
-                let _ = aspm.set_aspm_policy("performance");
-            }
-            let _ = self.backend.tweaks.set_wifi_power_save(false);
-            let _ = self.backend.tweaks.set_audio_power_save(false);
-            let _ = self.backend.tweaks.set_autosuspend(false);
-            let _ = self.backend.tweaks.set_nmi_watchdog(true);
-            let _ = self.backend.tweaks.set_vm_writeback_seconds(5); // 500 cs
-            if config.auto_brightness {
-                if let Some(bl) = &self.backend.backlight {
-                    let _ = bl.set_brightness_percent(100);
-                }
-            }
-
-            LogicStepResult {
-                is_charging: true,
+        if !config.auto_extreme_enabled {
+            return LogicStepResult {
+                is_charging,
+                applied: false,
                 discrete_power: 1.0,
                 target_cores: ncpu,
-                target_freq: 99_999,
-                target_gpu: 99_999,
-                target_rapl: 115,
+                target_freq: 0,
+                target_gpu: 0,
+                target_rapl: 0,
                 target_turbo: true,
                 target_epp: "performance",
-            }
+            };
+        }
+
+        // Adaptive ladder, plugged in or not — Go backend_linux.go:937-991 shape.
+        let load_str = self.backend.root().read("proc/loadavg");
+        let load: f64 = load_str
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let power_level = (load / ncpu as f64).min(1.0);
+        // Discrete quantization into 4 steps: 0, 0.333, 0.667, 1.0
+        let discrete_power = (power_level * 3.0).round() / 3.0;
+
+        let level = config.auto_extreme_level;
+        let ceiling = match level {
+            AutoExtremeLevel::High => 0.4,
+            AutoExtremeLevel::Medium => 0.7,
+            AutoExtremeLevel::Low => 1.0,
+        };
+
+        let (min_cpu, hw_max_cpu) = self.backend.cpu.freq_bounds().unwrap_or((400, 1600));
+        let max_cpu = (min_cpu as f64 + (hw_max_cpu as f64 - min_cpu as f64) * ceiling) as u32;
+
+        let (min_gpu, hw_max_gpu) = if let Some(gpu) = &self.backend.gpu {
+            gpu.gpu_bounds().unwrap_or((300, 1100))
         } else {
-            // Battery: adaptive loop — Go backend_linux.go:937-991
-            let load_str = self.backend.root().read("proc/loadavg");
-            let load: f64 = load_str
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-            let power_level = (load / ncpu as f64).min(1.0);
-            // Discrete quantization into 4 steps: 0, 0.333, 0.667, 1.0
-            let discrete_power = (power_level * 3.0).round() / 3.0;
+            (300, 1100)
+        };
+        let max_gpu = (min_gpu as f64 + (hw_max_gpu as f64 - min_gpu as f64) * ceiling) as u32;
 
-            let level = config.auto_extreme_level;
-            let ceiling = match level {
-                AutoExtremeLevel::High => 0.4,
-                AutoExtremeLevel::Medium => 0.7,
-                AutoExtremeLevel::Low => 1.0,
-            };
+        let (min_w, hw_max_w) = if let Some(rapl) = &self.backend.rapl {
+            rapl.rapl_bounds().unwrap_or((5, 115))
+        } else {
+            (5, 115)
+        };
+        let max_w = (min_w as f64 + (hw_max_w as f64 - min_w as f64) * ceiling) as u32;
 
-            let (min_cpu, hw_max_cpu) = self.backend.cpu.freq_bounds().unwrap_or((400, 1600));
-            let max_cpu = (min_cpu as f64 + (hw_max_cpu as f64 - min_cpu as f64) * ceiling) as u32;
-
-            let (min_gpu, hw_max_gpu) = if let Some(gpu) = &self.backend.gpu {
-                gpu.gpu_bounds().unwrap_or((300, 1100))
-            } else {
-                (300, 1100)
-            };
-            let max_gpu = (min_gpu as f64 + (hw_max_gpu as f64 - min_gpu as f64) * ceiling) as u32;
-
-            let (min_w, hw_max_w) = if let Some(rapl) = &self.backend.rapl {
-                rapl.rapl_bounds().unwrap_or((5, 115))
-            } else {
-                (5, 115)
-            };
-            let max_w = (min_w as f64 + (hw_max_w as f64 - min_w as f64) * ceiling) as u32;
-
-            let target_cores = match level {
-                AutoExtremeLevel::High => {
-                    let max_cores = (ncpu / 2).max(1);
-                    let cores = (1.0 + discrete_power * (max_cores - 1) as f64) as usize;
-                    cores.max(1)
-                }
-                AutoExtremeLevel::Medium => {
-                    let idle_cores = (ncpu / 2).max(2).min(ncpu);
-                    let cores =
-                        (idle_cores as f64 + discrete_power * (ncpu - idle_cores) as f64) as usize;
-                    cores.max(1).min(ncpu)
-                }
-                AutoExtremeLevel::Low => ncpu,
-            };
-
-            let target_cpu =
-                (min_cpu as f64 + discrete_power * (max_cpu as f64 - min_cpu as f64)) as u32;
-            let target_gpu =
-                (min_gpu as f64 + discrete_power * (max_gpu as f64 - min_gpu as f64)) as u32;
-            let target_rapl =
-                (min_w as f64 + discrete_power * (max_w as f64 - min_w as f64)) as u32;
-
-            let target_turbo = match level {
-                AutoExtremeLevel::High => discrete_power >= 0.8,
-                AutoExtremeLevel::Medium => discrete_power >= 0.5,
-                AutoExtremeLevel::Low => discrete_power >= 0.5,
-            };
-
-            let target_epp = match level {
-                AutoExtremeLevel::High => "power",
-                AutoExtremeLevel::Medium => "power",
-                AutoExtremeLevel::Low => {
-                    if discrete_power < 0.5 {
-                        "balance_power"
-                    } else {
-                        "balance_performance"
-                    }
-                }
-            };
-
-            let _ = self.backend.cpu.set_online_cores(target_cores);
-            let _ = self.backend.cpu.set_freq_limit(target_cpu);
-            if let Some(gpu) = &self.backend.gpu {
-                let _ = gpu.set_gpu_freq(target_gpu);
+        // High keeps the exact Go-validated shape: 1 -> ncpu/2.
+        // Medium/Low (Juan-approved): cores always start at 1 and scale to ncpu.
+        let target_cores = match level {
+            AutoExtremeLevel::High => {
+                let max_cores = (ncpu / 2).max(1);
+                let cores = (1.0 + discrete_power * (max_cores - 1) as f64) as usize;
+                cores.max(1)
             }
-            if let Some(rapl) = &self.backend.rapl {
-                let _ = rapl.set_pl1_watts(target_rapl);
-                let _ = rapl.set_pl2_watts(target_rapl);
+            AutoExtremeLevel::Medium | AutoExtremeLevel::Low => {
+                let cores = (1.0 + discrete_power * (ncpu - 1) as f64) as usize;
+                cores.max(1).min(ncpu)
             }
-            let _ = self
-                .backend
-                .cpu
-                .set_energy_performance_preference(target_epp);
-            let _ = self.backend.cpu.set_turbo_enabled(target_turbo);
+        };
 
-            // Peripherals on battery branch — Go backend_linux.go:984-990
+        let target_cpu =
+            (min_cpu as f64 + discrete_power * (max_cpu as f64 - min_cpu as f64)) as u32;
+        let target_gpu =
+            (min_gpu as f64 + discrete_power * (max_gpu as f64 - min_gpu as f64)) as u32;
+        let target_rapl = (min_w as f64 + discrete_power * (max_w as f64 - min_w as f64)) as u32;
+
+        // Turbo thresholds per approved table (the spec labels the middle steps
+        // 0.67/0.33 after 2-decimal rounding; compare against the exact step
+        // fractions so step 2/3 counts for Medium and step 1/3 for Low).
+        // High stays exactly as the Go-validated `>= 0.8`.
+        let target_turbo = match level {
+            AutoExtremeLevel::High => discrete_power >= 0.8,
+            AutoExtremeLevel::Medium => discrete_power >= 2.0 / 3.0,
+            AutoExtremeLevel::Low => discrete_power >= 1.0 / 3.0,
+        };
+
+        let target_epp = match level {
+            AutoExtremeLevel::High => "power",
+            AutoExtremeLevel::Medium => "power",
+            AutoExtremeLevel::Low => {
+                if discrete_power < 0.5 {
+                    "balance_power"
+                } else {
+                    "balance_performance"
+                }
+            }
+        };
+
+        let _ = self.backend.cpu.set_online_cores(target_cores);
+        let _ = self.backend.cpu.set_freq_limit(target_cpu);
+        if let Some(gpu) = &self.backend.gpu {
+            let _ = gpu.set_gpu_freq(target_gpu);
+        }
+        if let Some(rapl) = &self.backend.rapl {
+            let _ = rapl.set_pl1_watts(target_rapl);
+            let _ = rapl.set_pl2_watts(target_rapl);
+        }
+        let _ = self
+            .backend
+            .cpu
+            .set_energy_performance_preference(target_epp);
+        let _ = self.backend.cpu.set_turbo_enabled(target_turbo);
+
+        // Energy-saving peripherals stay gated on battery: they are power
+        // saving, not a mode. Plugged in, the ladder still scales cores/freq/
+        // RAPL/GPU, but the machine keeps its normal peripheral behavior.
+        if !is_charging {
             if let Some(aspm) = &self.backend.aspm {
                 let _ = aspm.set_aspm_policy("powersave");
             }
@@ -334,26 +305,24 @@ impl DaemonRunner {
             let _ = self.backend.tweaks.set_autosuspend(true);
             let _ = self.backend.tweaks.set_nmi_watchdog(false);
             let _ = self.backend.tweaks.set_vm_writeback_seconds(60); // 6000 cs
+        }
 
-            LogicStepResult {
-                is_charging: false,
-                discrete_power,
-                target_cores,
-                target_freq: target_cpu,
-                target_gpu,
-                target_rapl,
-                target_turbo,
-                target_epp,
-            }
+        LogicStepResult {
+            is_charging,
+            applied: true,
+            discrete_power,
+            target_cores,
+            target_freq: target_cpu,
+            target_gpu,
+            target_rapl,
+            target_turbo,
+            target_epp,
         }
     }
 
     pub fn apply_logic(&self) {
-        // Go `applyLogic()` runs on every 5 s tick unconditionally
-        // (`hal/backend_linux.go:918-992`): `IsCharging()` alone decides the
-        // branch, never a config flag. Gating on `auto_extreme_enabled` left
-        // the machine untouched while plugged in (the A/B 3-DIF bug: the
-        // config profile beat the restore path).
+        // Juan: the mode follows the user flag (`auto_extreme_enabled`), on AC
+        // or battery. The cable never enables or disables anything by itself.
         let config = self.config();
         self.apply_logic_step(&config);
     }
@@ -554,8 +523,8 @@ mod tests {
         root
     }
 
-    /// (a) a batería con load normalizado 0.0, 0.2, 0.5, 1.0 -> escalones 0 / 0.333 / 0.667 / 1.0
-    /// y target_freq, target_cores, target_rapl calculados con el techo 40 %.
+    /// (a) Escalera High a batería, byte a byte como Go: load normalizado
+    /// 0.0, 0.2, 0.5, 1.0 -> escalones 0 / 0.333 / 0.667 / 1.0 con techo 40 %.
     #[test]
     fn test_a_battery_adaptive_quantized_steps_and_40_percent_ceiling() {
         let root = fake_intel_laptop("test_a");
@@ -699,15 +668,10 @@ mod tests {
         let _ = fs::remove_dir_all(root.root());
     }
 
-    /// A/B regression test for the CARGA/RESTORE branch
-    /// (`scripts/ab_parity.sh` on the Vostro, plugged in): with `IsCharging()`
-    /// true the Go daemon (`hal/backend_linux.go:919-935`) restores full power —
-    /// `SetRAPLPL1(115)` + `SetRAPLPL2(115)` clamped to the hardware max range
-    /// and `SetEPP("performance")` (which forces governor `performance` on every
-    /// cpu, `backend_linux.go:380-386`). Fails if anyone routes the charging
-    /// path through `PowerProfile::Normal` again (45/65 W, `powersave`).
+    /// Juan: la escalera corre enchufado o no. El viejo restore de Go a 115 W
+    /// ya no existe: con la misma carga da el mismo resultado que a bateria.
     #[test]
-    fn test_e_charging_restore_matches_go_115w_and_performance_governor() {
+    fn test_e_plugged_in_runs_ladder_not_go_restore() {
         // Dell Vostro shape: RAPL range 0..115 W so the Go clamp lands on 115 W
         // in both constraints, like the real machine in the A/B report.
         let dir = std::env::temp_dir().join(format!("ww_daemon_test_e_{}", std::process::id()));
@@ -776,10 +740,11 @@ mod tests {
         write(&root, "sys/class/power_supply/AC/type", "Mains\n");
         write(&root, "sys/class/power_supply/AC/online", "1\n");
 
-        // The pre-existing AC branch of `apply_logic_step` is the restore path;
-        // assert it writes exactly what Go writes on the Vostro.
+        // The plugged-in step now runs the ladder: assert it writes the ladder
+        // values for the simulated idle load, NOT the old Go 115 W restore.
         let backend = LinuxBackend::with_root(root.clone()).unwrap();
         assert!(backend.battery.is_charging().unwrap());
+        write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
         let config = Config {
             auto_extreme_enabled: true,
             ..Default::default()
@@ -787,123 +752,423 @@ mod tests {
         let runner = DaemonRunner::with_paths(backend, None, None);
         let res = runner.apply_logic_step(&config);
         assert!(res.is_charging);
-        assert_eq!(res.target_rapl, 115);
-        assert_eq!(res.target_epp, "performance");
+        assert!(res.applied);
+        assert_eq!(res.discrete_power, 0.0);
+        assert_eq!(res.target_cores, 1);
+        assert_eq!(res.target_freq, 400);
+        assert_eq!(res.target_rapl, 0);
+        assert_eq!(res.target_gpu, 300);
+        assert!(!res.target_turbo);
+        assert_eq!(res.target_epp, "power");
 
         assert_eq!(
             read(&root, &format!("{RAPL}/constraint_0_power_limit_uw")),
-            "115000000"
+            "0"
         );
         assert_eq!(
             read(&root, &format!("{RAPL}/constraint_1_power_limit_uw")),
-            "115000000"
+            "0"
         );
         for i in 0..4 {
             assert_eq!(
                 read(&root, &format!("{CPU}/cpu{i}/cpufreq/scaling_governor")),
-                "performance"
+                "powersave"
             );
         }
 
         let _ = fs::remove_dir_all(root.root());
     }
 
-    /// (b) enchufado -> el set completo de la rama AC
+    /// (b) Sin modo habilitado no se adapta nada: se respeta el perfil de
+    /// config y no se toca el hardware. `is_charging` se sigue reportando.
     #[test]
-    fn test_b_plugged_in_ac_complete_set() {
-        let root = fake_intel_laptop("test_b");
-        // Plug in AC
-        write(&root, "sys/class/power_supply/AC/online", "1\n");
+    fn test_f_disabled_mode_touches_nothing() {
+        let root = fake_intel_laptop("test_f");
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let config = Config {
+            auto_extreme_enabled: false,
+            ..Default::default()
+        };
+        let runner = DaemonRunner::with_paths(backend, None, None);
 
+        write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
+        let before_freq = read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq"));
+        let before_rapl = read(&root, &format!("{RAPL}/constraint_0_power_limit_uw"));
+        let res = runner.apply_logic_step(&config);
+        assert!(!res.is_charging);
+        assert!(!res.applied);
+        assert_eq!(
+            read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+            before_freq
+        );
+        assert_eq!(
+            read(&root, &format!("{RAPL}/constraint_0_power_limit_uw")),
+            before_rapl
+        );
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// (g) Enchufado, la escalera da el mismo resultado que a batería para la
+    /// misma carga: el cable no decide nada.
+    #[test]
+    fn test_g_ladder_same_plugged_and_unplugged() {
+        let root = fake_intel_laptop("test_g");
         let backend = LinuxBackend::with_root(root.clone()).unwrap();
         let config = Config {
             auto_extreme_enabled: true,
-            auto_brightness: true,
+            auto_extreme_level: AutoExtremeLevel::High,
+            ..Default::default()
+        };
+        let runner = DaemonRunner::with_paths(backend, None, None);
+
+        let mut on_ac = Vec::new();
+        let mut on_battery = Vec::new();
+        for load in ["0.00", "1.60", "4.00", "8.00"] {
+            write(
+                &root,
+                "proc/loadavg",
+                &format!("{load} {load} {load} 1/100 1234\n"),
+            );
+            write(&root, "sys/class/power_supply/AC/online", "1\n");
+            on_ac.push(runner.apply_logic_step(&config));
+
+            write(
+                &root,
+                "proc/loadavg",
+                &format!("{load} {load} {load} 1/100 1234\n"),
+            );
+            write(&root, "sys/class/power_supply/AC/online", "0\n");
+            on_battery.push(runner.apply_logic_step(&config));
+        }
+        assert_eq!(on_ac.len(), 4);
+        for (ac, bat) in on_ac.iter().zip(on_battery.iter()) {
+            assert!(ac.is_charging, "AC=1 must still report charging");
+            assert!(!bat.is_charging, "AC=0 must still report discharging");
+            assert_eq!(ac.discrete_power, bat.discrete_power);
+            assert_eq!(ac.target_cores, bat.target_cores);
+            assert_eq!(ac.target_freq, bat.target_freq);
+            assert_eq!(ac.target_gpu, bat.target_gpu);
+            assert_eq!(ac.target_rapl, bat.target_rapl);
+            assert_eq!(ac.target_turbo, bat.target_turbo);
+            assert_eq!(ac.target_epp, bat.target_epp);
+        }
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// (h) Regresión: con el cable puesto, el daemon NO escribe el máximo del
+    /// hardware; escribe lo que dice la escalera (idle -> mínimos).
+    #[test]
+    fn test_h_plugged_in_writes_ladder_not_hw_max() {
+        let root = fake_intel_laptop("test_h");
+        write(&root, "sys/class/power_supply/AC/online", "1\n");
+        write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
+
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        assert!(backend.battery.is_charging().unwrap());
+        let config = Config {
+            auto_extreme_enabled: true,
+            auto_extreme_level: AutoExtremeLevel::High,
             ..Default::default()
         };
         let runner = DaemonRunner::with_paths(backend, None, None);
 
         let res = runner.apply_logic_step(&config);
-        assert!(res.is_charging);
-        assert_eq!(res.target_cores, 8);
-        assert_eq!(res.target_freq, 99_999);
-        assert_eq!(res.target_rapl, 115);
-        assert_eq!(res.target_gpu, 99_999);
-        assert!(res.target_turbo);
-        assert_eq!(res.target_epp, "performance");
-
-        // Verificación completa de los 13 writes en la rama AC:
-        // 1. Cores: todos los 8 cores online
-        for i in 1..8 {
-            assert_eq!(read(&root, &format!("{CPU}/cpu{i}/online")), "1");
-        }
-        // 2. FreqLimit: clampeado a hwMax (3500 MHz = 3500000 kHz)
-        for i in 0..8 {
-            assert_eq!(
-                read(&root, &format!("{CPU}/cpu{i}/cpufreq/scaling_max_freq")),
-                "3500000"
-            );
-        }
-        // 3. RAPL PL1 & PL2: 115W clampeado a hwMax (60 W = 60000000 uW)
+        assert!(res.applied);
+        assert_eq!(res.target_freq, 400);
+        assert_eq!(res.target_cores, 1);
         assert_eq!(
+            read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+            "400000"
+        );
+        assert_ne!(
+            read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+            "3500000"
+        );
+        assert_eq!(
+            read(&root, &format!("{RAPL}/constraint_0_power_limit_uw")),
+            "2000000"
+        );
+        assert_ne!(
             read(&root, &format!("{RAPL}/constraint_0_power_limit_uw")),
             "60000000"
         );
-        assert_eq!(
-            read(&root, &format!("{RAPL}/constraint_1_power_limit_uw")),
-            "60000000"
-        );
-        // 4. Turbo: enabled (no_turbo = "0")
-        assert_eq!(read(&root, &format!("{CPU}/intel_pstate/no_turbo")), "0");
-        // 5. EPP: "performance" y governor "performance" en todos los CPUs
-        for i in 0..8 {
-            assert_eq!(
-                read(
-                    &root,
-                    &format!("{CPU}/cpu{i}/cpufreq/energy_performance_preference")
-                ),
-                "performance"
-            );
-            assert_eq!(
-                read(&root, &format!("{CPU}/cpu{i}/cpufreq/scaling_governor")),
-                "performance"
-            );
-        }
-        // 6. GPU: 99999 clampeado a hwMax (1100 MHz)
-        assert_eq!(read(&root, &format!("{DRM}/card0/gt_max_freq_mhz")), "1100");
-        // 7. ASPM: "performance"
-        assert_eq!(
-            read(&root, "sys/module/pcie_aspm/parameters/policy"),
-            "performance"
-        );
-        // 8. WiFi power save: false ("N")
-        assert_eq!(read(&root, "sys/module/iwlwifi/parameters/power_save"), "N");
-        // 9. Audio power save: false ("0" y "N")
-        assert_eq!(
-            read(&root, "sys/module/snd_hda_intel/parameters/power_save"),
-            "0"
-        );
-        assert_eq!(
-            read(
-                &root,
-                "sys/module/snd_hda_intel/parameters/power_save_controller"
-            ),
-            "N"
-        );
-        // 10. Autosuspend: false ("on")
-        assert_eq!(read(&root, "sys/bus/usb/devices/usb1/power/control"), "on");
-        assert_eq!(
-            read(&root, "sys/bus/pci/devices/0000:00:14.0/power/control"),
-            "on"
-        );
-        // 11. Watchdog: true ("1")
-        assert_eq!(read(&root, "proc/sys/kernel/nmi_watchdog"), "1");
-        // 12. VM writeback: 500 centiseconds
-        assert_eq!(read(&root, "proc/sys/vm/dirty_writeback_centisecs"), "500");
-        // 13. Auto-brightness: 100% (1000)
-        assert_eq!(read(&root, &format!("{BL}/brightness")), "1000");
+        assert_eq!(read(&root, &format!("{DRM}/card0/gt_max_freq_mhz")), "300");
 
         let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// (i) Enchufado, los periféricos de ahorro NO se tocan (son ahorro
+    /// energético, no un modo); a batería sí.
+    #[test]
+    fn test_i_saving_peripherals_only_on_battery() {
+        let root = fake_intel_laptop("test_i");
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        let config = Config {
+            auto_extreme_enabled: true,
+            auto_extreme_level: AutoExtremeLevel::High,
+            ..Default::default()
+        };
+        let runner = DaemonRunner::with_paths(backend, None, None);
+
+        write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
+        write(&root, "sys/class/power_supply/AC/online", "1\n");
+        let res_ac = runner.apply_logic_step(&config);
+        assert!(res_ac.is_charging);
+        assert_eq!(read(&root, "sys/module/iwlwifi/parameters/power_save"), "N");
+        assert_eq!(read(&root, "proc/sys/kernel/nmi_watchdog"), "1");
+        assert_eq!(read(&root, "proc/sys/vm/dirty_writeback_centisecs"), "500");
+
+        write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
+        write(&root, "sys/class/power_supply/AC/online", "0\n");
+        let res_bat = runner.apply_logic_step(&config);
+        assert!(!res_bat.is_charging);
+        assert_eq!(read(&root, "sys/module/iwlwifi/parameters/power_save"), "Y");
+        assert_eq!(read(&root, "proc/sys/kernel/nmi_watchdog"), "0");
+        assert_eq!(read(&root, "proc/sys/vm/dirty_writeback_centisecs"), "6000");
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// (b) Los tres niveles con valores exactos en los 4 escalones
+    /// (cores + freq + rapl + gpu + turbo + epp), a batería Y enchufado con el
+    /// mismo resultado. Hardware falso: 8 CPUs 400..3500 MHz, RAPL 2..60 W,
+    /// GPU 300..1100 MHz.
+    /// High (techo 0.4): max_cpu 1640, max_w 25, max_gpu 620, cores 1->4.
+    /// Medium (techo 0.7): max_cpu 2570, max_w 42, max_gpu 860, cores 1->8.
+    /// Low (techo 1.0): max_cpu 3500, max_w 60, max_gpu 1100, cores 1->8.
+    #[test]
+    fn test_b_plugged_in_ac_complete_set() {
+        struct Case {
+            load: &'static str,
+            dp_num: f64,
+            dp_den: f64,
+            cores: usize,
+            freq: u32,
+            rapl: u32,
+            gpu: u32,
+            turbo: bool,
+            epp: &'static str,
+        }
+        let high_cases = [
+            Case {
+                load: "0.00",
+                dp_num: 0.0,
+                dp_den: 1.0,
+                cores: 1,
+                freq: 400,
+                rapl: 2,
+                gpu: 300,
+                turbo: false,
+                epp: "power",
+            },
+            Case {
+                load: "1.60",
+                dp_num: 1.0,
+                dp_den: 3.0,
+                cores: 2,
+                freq: 813,
+                rapl: 9,
+                gpu: 406,
+                turbo: false,
+                epp: "power",
+            },
+            Case {
+                load: "4.00",
+                dp_num: 2.0,
+                dp_den: 3.0,
+                cores: 3,
+                freq: 1226,
+                rapl: 17,
+                gpu: 513,
+                turbo: false,
+                epp: "power",
+            },
+            Case {
+                load: "8.00",
+                dp_num: 1.0,
+                dp_den: 1.0,
+                cores: 4,
+                freq: 1640,
+                rapl: 25,
+                gpu: 620,
+                turbo: true,
+                epp: "power",
+            },
+        ];
+        let medium_cases = [
+            Case {
+                load: "0.00",
+                dp_num: 0.0,
+                dp_den: 1.0,
+                cores: 1,
+                freq: 400,
+                rapl: 2,
+                gpu: 300,
+                turbo: false,
+                epp: "power",
+            },
+            Case {
+                load: "1.60",
+                dp_num: 1.0,
+                dp_den: 3.0,
+                cores: 3,
+                freq: 1123,
+                rapl: 15,
+                gpu: 486,
+                turbo: false,
+                epp: "power",
+            },
+            Case {
+                load: "4.00",
+                dp_num: 2.0,
+                dp_den: 3.0,
+                cores: 5,
+                freq: 1846,
+                rapl: 28,
+                gpu: 673,
+                turbo: true,
+                epp: "power",
+            },
+            Case {
+                load: "8.00",
+                dp_num: 1.0,
+                dp_den: 1.0,
+                cores: 8,
+                freq: 2570,
+                rapl: 42,
+                gpu: 860,
+                turbo: true,
+                epp: "power",
+            },
+        ];
+        let low_cases = [
+            Case {
+                load: "0.00",
+                dp_num: 0.0,
+                dp_den: 1.0,
+                cores: 1,
+                freq: 400,
+                rapl: 2,
+                gpu: 300,
+                turbo: false,
+                epp: "balance_power",
+            },
+            Case {
+                load: "1.60",
+                dp_num: 1.0,
+                dp_den: 3.0,
+                cores: 3,
+                freq: 1433,
+                rapl: 21,
+                gpu: 566,
+                turbo: true,
+                epp: "balance_power",
+            },
+            Case {
+                load: "4.00",
+                dp_num: 2.0,
+                dp_den: 3.0,
+                cores: 5,
+                freq: 2466,
+                rapl: 40,
+                gpu: 833,
+                turbo: true,
+                epp: "balance_performance",
+            },
+            Case {
+                load: "8.00",
+                dp_num: 1.0,
+                dp_den: 1.0,
+                cores: 8,
+                freq: 3500,
+                rapl: 60,
+                gpu: 1100,
+                turbo: true,
+                epp: "balance_performance",
+            },
+        ];
+        let levels = [
+            (AutoExtremeLevel::High, &high_cases[..]),
+            (AutoExtremeLevel::Medium, &medium_cases[..]),
+            (AutoExtremeLevel::Low, &low_cases[..]),
+        ];
+
+        for (level, cases) in levels {
+            for ac in ["0", "1"] {
+                let root = fake_intel_laptop(&format!("test_b_{level}_{ac}"));
+                write(
+                    &root,
+                    "sys/class/power_supply/AC/online",
+                    &format!("{ac}\n"),
+                );
+                let backend = LinuxBackend::with_root(root.clone()).unwrap();
+                let config = Config {
+                    auto_extreme_enabled: true,
+                    auto_extreme_level: level,
+                    ..Default::default()
+                };
+                let runner = DaemonRunner::with_paths(backend, None, None);
+
+                for c in cases {
+                    write(
+                        &root,
+                        "proc/loadavg",
+                        &format!("{} {} {} 1/100 1234\n", c.load, c.load, c.load),
+                    );
+                    let res = runner.apply_logic_step(&config);
+                    let expected_dp = c.dp_num / c.dp_den;
+                    assert!(
+                        (res.discrete_power - expected_dp).abs() < 1e-9,
+                        "{level} AC={ac} load={}: dp {} != {expected_dp}",
+                        c.load,
+                        res.discrete_power,
+                    );
+                    assert_eq!(
+                        res.target_cores, c.cores,
+                        "{level} AC={ac} load={} cores",
+                        c.load
+                    );
+                    assert_eq!(
+                        res.target_freq, c.freq,
+                        "{level} AC={ac} load={} freq",
+                        c.load
+                    );
+                    assert_eq!(
+                        res.target_rapl, c.rapl,
+                        "{level} AC={ac} load={} rapl",
+                        c.load
+                    );
+                    assert_eq!(res.target_gpu, c.gpu, "{level} AC={ac} load={} gpu", c.load);
+                    assert_eq!(
+                        res.target_turbo, c.turbo,
+                        "{level} AC={ac} load={} turbo",
+                        c.load
+                    );
+                    assert_eq!(res.target_epp, c.epp, "{level} AC={ac} load={} epp", c.load);
+                    assert_eq!(
+                        res.is_charging,
+                        ac == "1",
+                        "{level} AC={ac} load={} is_charging",
+                        c.load
+                    );
+                    assert!(
+                        res.applied,
+                        "{level} AC={ac} load={}: ladder must apply",
+                        c.load
+                    );
+                    assert_eq!(
+                        read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
+                        (c.freq * 1000).to_string(),
+                        "{level} AC={ac} load={} sysfs freq",
+                        c.load
+                    );
+                }
+
+                let _ = fs::remove_dir_all(root.root());
+            }
+        }
     }
 
     /// (c) `turbo` sólo en el escalón 1.0 y EPP `power` en todos los escalones
@@ -1047,7 +1312,8 @@ mod tests {
         let _ = fs::remove_dir_all(root.root());
     }
 
-    /// Parameterized levels test: medium (ceiling 0.7, turbo from 0.5) and low (ceiling 1.0, turbo from 0.5)
+    /// Niveles medium/low con la tabla aprobada: techo 0.7/1.0, cores 1->ncpu,
+    /// turbo Medium >= 2/3 y Low >= 1/3, EPP Low balance_* por umbral 0.5.
     #[test]
     fn test_medium_and_low_parameterized_levels() {
         let root = fake_intel_laptop("test_levels");
@@ -1055,7 +1321,7 @@ mod tests {
 
         // Medium level: ceiling 0.7
         // CPU: 400 + 3100*0.7 = 400 + 2170 = 2570.
-        // At load 1.0: target_freq = 2570. Turbo from 0.5 -> true at load 0.5 and 1.0.
+        // Turbo >= 2/3 -> false en 1/3, true en 2/3 y 1.0.
         let cfg_medium = Config {
             auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::Medium,
@@ -1067,16 +1333,23 @@ mod tests {
         write(&root, "proc/loadavg", "8.00 8.00 8.00 1/100 1234\n");
         let res_med_1 = runner_med.apply_logic_step(&cfg_medium);
         assert_eq!(res_med_1.target_freq, 2570);
+        assert_eq!(res_med_1.target_cores, 8);
+        assert_eq!(res_med_1.target_rapl, 42);
         assert!(res_med_1.target_turbo);
         assert_eq!(res_med_1.target_epp, "power");
 
         write(&root, "proc/loadavg", "4.00 4.00 4.00 1/100 1234\n");
         let res_med_05 = runner_med.apply_logic_step(&cfg_medium);
-        assert!(res_med_05.target_turbo); // 2/3 >= 0.5
+        assert!(res_med_05.target_turbo); // 2/3 >= 2/3
+
+        write(&root, "proc/loadavg", "1.60 1.60 1.60 1/100 1234\n");
+        let res_med_033 = runner_med.apply_logic_step(&cfg_medium);
+        assert!(!res_med_033.target_turbo); // 1/3 < 2/3
+        assert_eq!(res_med_033.target_cores, 3);
 
         // Low level: ceiling 1.0
-        // CPU: 400 + 3100*1.0 = 3500.
-        // All cores online (8). EPP: balance_power at idle, balance_performance at load.
+        // CPU: 400 + 3100*1.0 = 3500. Turbo >= 1/3. EPP: balance_power si
+        // dp < 0.5, balance_performance si no.
         let cfg_low = Config {
             auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::Low,
@@ -1091,9 +1364,16 @@ mod tests {
         assert!(res_low_1.target_turbo);
         assert_eq!(res_low_1.target_epp, "balance_performance");
 
+        write(&root, "proc/loadavg", "1.60 1.60 1.60 1/100 1234\n");
+        let res_low_033 = runner_low.apply_logic_step(&cfg_low);
+        assert_eq!(res_low_033.target_cores, 3);
+        assert!(res_low_033.target_turbo); // 1/3 >= 1/3
+        assert_eq!(res_low_033.target_epp, "balance_power");
+
         write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
         let res_low_0 = runner_low.apply_logic_step(&cfg_low);
-        assert_eq!(res_low_0.target_cores, 8);
+        assert_eq!(res_low_0.target_cores, 1);
+        assert!(!res_low_0.target_turbo);
         assert_eq!(res_low_0.target_epp, "balance_power");
 
         let _ = fs::remove_dir_all(root.root());
@@ -1150,6 +1430,42 @@ mod tests {
         assert_eq!(read(&root, &format!("{BL}/brightness")), "320");
         assert_eq!(runner.apply_brightness_step(Some("code")), Some(50));
         assert_eq!(read(&root, &format!("{BL}/brightness")), "500");
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// Juan: auto-brightness nunca fuerza 100 % por estar enchufado; adapta por
+    /// ventana activa con AC/online = 1 igual que con 0.
+    #[test]
+    fn test_brightness_never_forces_100_when_plugged_in() {
+        let root = fake_intel_laptop("test_bl_ac");
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+
+        let tmp_cfg = root.path("config.json");
+        let cfg = Config {
+            auto_extreme_enabled: true,
+            auto_brightness: true,
+            auto_extreme_level: AutoExtremeLevel::High,
+            ..Default::default()
+        };
+        cfg.save(Some(&tmp_cfg)).unwrap();
+
+        let runner = DaemonRunner::with_paths(backend, Some(tmp_cfg), None);
+
+        for ac in ["0", "1"] {
+            write(
+                &root,
+                "sys/class/power_supply/AC/online",
+                &format!("{ac}\n"),
+            );
+            assert_eq!(runner.apply_brightness_step(Some("kitty")), Some(12));
+            assert_eq!(read(&root, &format!("{BL}/brightness")), "120");
+            assert_eq!(runner.apply_brightness_step(Some("firefox")), Some(30));
+            assert_eq!(read(&root, &format!("{BL}/brightness")), "300");
+            assert_eq!(runner.apply_brightness_step(Some("gimp")), Some(20));
+            assert_eq!(read(&root, &format!("{BL}/brightness")), "200");
+            assert_ne!(read(&root, &format!("{BL}/brightness")), "1000");
+        }
 
         let _ = fs::remove_dir_all(root.root());
     }
