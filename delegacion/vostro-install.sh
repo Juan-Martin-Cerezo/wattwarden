@@ -67,5 +67,6 @@ echo "--- 15 s después (si cambió algo, el lazo está vivo):"; snap
 
 echo
 echo "LISTO. Para ver el dashboard (tu terminal, no por ssh):   sudo wattwarden"
-echo "Para probar los niveles:   sudo wattwarden level medium   # low | medium | high"
+echo "Niveles (low|medium|high): se cambian EN EL DASHBOARD -> sudo wattwarden, item 'Auto Extreme Level' (Enter cicla)"
+echo "  o editando /etc/wattwarden/config.json  (NO existe el comando 'wattwarden level X': cualquier flag desconocido abre la TUI, igual que en Go)"
 echo "Para la comparación A/B contra el binario Go:   sudo bash $REPO/scripts/ab_parity.sh <go> <rust> 30"
