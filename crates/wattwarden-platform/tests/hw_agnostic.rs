@@ -221,6 +221,50 @@ fn freq_and_gpu_scale_with_each_machine() {
     assert_eq!(read(&g, &format!("{DRM}/card1/gt_max_freq_mhz")), "1500");
 }
 
+/// The ratchet test against the fake Vostro: the mutable `scaling_max_freq` was left
+/// inflated at 2.4 GHz while the immutable `cpuinfo_max_freq` declares 1.6 GHz.
+/// Discovery reads only `cpuinfo_*`, so the range stays 400..1600 and an impossible
+/// request lands exactly on 1600000 — never on the inflated 2400000.
+#[test]
+fn inflated_scaling_max_never_widens_the_discovered_range() {
+    let root = fake_vostro("ratchet");
+    for i in 0..3 {
+        write(
+            &root,
+            &format!("{CPU}/cpu{i}/cpufreq/scaling_max_freq"),
+            "2400000\n",
+        );
+    }
+
+    let cpu = LinuxCpuGovernor::with_root(root.clone());
+    assert_eq!(cpu.discovered_freq_bounds(), Some((400, 1600)));
+    assert_eq!(cpu.freq_bounds().unwrap(), (400, 1600));
+
+    cpu.set_freq_limit(99_999).unwrap();
+    for i in 0..3 {
+        let written = read(&root, &format!("{CPU}/cpu{i}/cpufreq/scaling_max_freq"));
+        assert_eq!(written, "1600000", "cpu{i}: clamp to the real ceiling");
+        assert!(
+            written.parse::<u64>().unwrap() <= 1_600_000,
+            "cpu{i}: never above the discovered max"
+        );
+    }
+}
+
+/// The same ratchet on the GPU: the writable `gt_max_freq_mhz` cannot define the
+/// range. Only the immutable `gt_RPn`/`gt_RP0` do, so the request lands on 1500.
+#[test]
+fn gpu_discovery_uses_only_immutable_hw_info() {
+    let root = fake_vostro("gpu_immutable");
+    // Simulate a previous write having ratcheted the writable node down.
+    write(&root, &format!("{DRM}/card1/gt_max_freq_mhz"), "700\n");
+
+    let gpu = LinuxGpu::with_root(root.clone()).unwrap();
+    assert_eq!(gpu.discovered_gpu_bounds(), Some((300, 1500)));
+    gpu.set_gpu_freq(99_999).unwrap();
+    assert_eq!(read(&root, &format!("{DRM}/card1/gt_max_freq_mhz")), "1500");
+}
+
 /// Brightness is always a percentage of the discovered `max_brightness`.
 #[test]
 fn backlight_percent_uses_each_discovered_max() {

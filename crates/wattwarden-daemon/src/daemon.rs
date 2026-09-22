@@ -1955,6 +1955,67 @@ mod tests {
         }
     }
 
+    /// Corazón del arreglo (trinquete), a nivel daemon: `scaling_max_freq` quedó
+    /// inflado en 2.4 GHz mientras `cpuinfo_max_freq` declara 1.6 GHz. La escalera
+    /// descubre el rango SÓLO de `cpuinfo_*`, así que con el techo al 100 % (nivel Low)
+    /// y carga máxima escribe exactamente 1600000 — nunca 2400000 — y seguir iterando
+    /// no lo infla.
+    #[test]
+    fn test_freq_ratchet_never_exceeds_discovered_max() {
+        let root = fake_machine("ratchet", 3, 400_000, 1_600_000, 15_000_000);
+        for i in 0..3 {
+            write(
+                &root,
+                &format!("{CPU}/cpu{i}/cpufreq/scaling_max_freq"),
+                "2400000\n",
+            );
+        }
+
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        assert_eq!(backend.cpu.discovered_freq_bounds(), Some((400, 1600)));
+        let config = Config {
+            auto_extreme_enabled: true,
+            auto_extreme_level: AutoExtremeLevel::Low, // techo 100 % del rango hw
+            ..Default::default()
+        };
+        let runner = DaemonRunner::with_paths(backend, None, None);
+
+        write(&root, "proc/loadavg", "3.00 3.00 3.00 1/3 1234\n");
+        let res = runner.apply_logic_step(&config);
+        assert_eq!(res.discrete_power, 1.0);
+        assert_eq!(res.target_freq, 1600, "el techo es 1600 MHz, no 2400");
+        for i in 0..3 {
+            let written = read(&root, &format!("{CPU}/cpu{i}/cpufreq/scaling_max_freq"));
+            assert_eq!(written, "1600000", "cpu{i}: exactamente el máximo real");
+            assert!(
+                written.parse::<u64>().unwrap() <= 1_600_000,
+                "cpu{i}: nunca por encima de 1.6 GHz"
+            );
+        }
+
+        // Iterar no infla el rango: los `cpuinfo_*` no cambian con las escrituras.
+        for load in ["0.00", "1.00", "2.00", "3.00"] {
+            write(
+                &root,
+                "proc/loadavg",
+                &format!("{load} {load} {load} 1/3 1234\n"),
+            );
+            let res = runner.apply_logic_step(&config);
+            assert!(res.target_freq <= 1600);
+            for i in 0..3 {
+                let written: u64 = read(&root, &format!("{CPU}/cpu{i}/cpufreq/scaling_max_freq"))
+                    .parse()
+                    .unwrap();
+                assert!(
+                    written <= 1_600_000,
+                    "load={load} cpu{i}: {written} > 1.6 GHz"
+                );
+            }
+        }
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
     /// The core ramp always has steps, even on a 3-core machine (the old
     /// `(ncpu / 2).max(1)` collapsed to a flat 1).
     #[test]

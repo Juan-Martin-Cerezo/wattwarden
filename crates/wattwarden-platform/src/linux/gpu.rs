@@ -6,7 +6,9 @@
 //!   otherwise `/sys/class/drm/card0`, otherwise "no support".
 //! * `GetGPUBounds()` -> no card means `(300, 1100)`; otherwise
 //!   min = `gt_RPn_freq_mhz` else `gt_min_freq_mhz`, max = `gt_RP0_freq_mhz` else
-//!   `gt_max_freq_mhz`, each falling back to `300`/`1100` on parse failure.
+//!   `gt_max_freq_mhz`, each falling back to `300`/`1100` on parse failure. This is
+//!   the **display** path: a written value (`gt_min`/`gt_max`) may appear in it, which
+//!   is fine for a UI fallback but is never allowed to gate a write.
 //! * `GetGPUFreq()` -> 0 when there is no card or the file is unparsable.
 //! * `SetGPUFreq(mhz)` -> no card is a no-op; otherwise clamp to bounds and write
 //!   `gt_min_freq_mhz = min` **first**, then `gt_max_freq_mhz = mhz` (Go warns that
@@ -86,21 +88,23 @@ impl LinuxGpu {
         }
     }
 
-    /// `(min, max)` MHz actually discovered on the card: `gt_RPn_freq_mhz`/`gt_RP0_freq_mhz`
-    /// when present, else the `gt_min_freq_mhz`/`gt_max_freq_mhz` pair.
+    /// `(min, max)` MHz discovered from the card's **immutable** hardware info:
+    /// `gt_RPn_freq_mhz` and `gt_RP0_freq_mhz`.
     ///
-    /// `None` when there is no card, one of the bounds is missing, or the range is
-    /// degenerate (`min == max`): callers must then **not write**. [`GpuController::gpu_bounds`]
-    /// keeps the legacy `300/1100` fallback for display, but writes are gated on this.
+    /// `gt_min_freq_mhz`/`gt_max_freq_mhz` are deliberately **not** used here: they are
+    /// the nodes [`GpuController::set_gpu_freq`] writes, so reading them back to
+    /// discover the range would let it ratchet with every write (exactly the CPU bug,
+    /// in the display path). They are for writing only.
+    ///
+    /// `None` when there is no card, either immutable bound is missing, or the range is
+    /// degenerate (`min == max`): callers must then **not write**.
+    /// [`GpuController::gpu_bounds`] keeps the legacy `300/1100` fallback for display.
     pub fn discovered_gpu_bounds(&self) -> Option<(u32, u32)> {
         self.card.as_ref()?;
-        let min = self
-            .card_read("gt_RPn_freq_mhz")
-            .or_else(|| self.card_read("gt_min_freq_mhz"))?;
-        let max = self
-            .card_read("gt_RP0_freq_mhz")
-            .or_else(|| self.card_read("gt_max_freq_mhz"))?;
+        let min = self.card_read("gt_RPn_freq_mhz")?;
+        let max = self.card_read("gt_RP0_freq_mhz")?;
         if max <= min {
+            debug!("GPU: degenerate gt_RPn/gt_RP0 range ({min}..{max} MHz); freq undiscoverable");
             return None;
         }
         Some((min, max))
@@ -139,6 +143,12 @@ impl GpuController for LinuxGpu {
             return Ok(());
         };
         let target = mhz.clamp(min, max);
+        if target != mhz {
+            debug!(
+                "GPU: requested {mhz} MHz outside discovered range {min}..{max} MHz; \
+                 writing the discovered bound {target} MHz"
+            );
+        }
 
         // Order matters: the software minimum first, then the user limit.
         self.card_write("gt_min_freq_mhz", min);
@@ -284,6 +294,53 @@ mod tests {
         assert_eq!(
             fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
             "1100\n"
+        );
+    }
+
+    /// Discovery for writes must ignore the nodes the controller itself writes
+    /// (`gt_min_freq_mhz`/`gt_max_freq_mhz`): only the immutable `gt_RPn`/`gt_RP0`
+    /// may define the range, otherwise it ratchets with every write.
+    #[test]
+    fn discovery_ignores_the_written_nodes() {
+        // A card exposing only the writable pair: no immutable range -> never write.
+        let (root, card) = card_root(
+            "writtenonly",
+            &[("gt_max_freq_mhz", "1100\n"), ("gt_min_freq_mhz", "300\n")],
+        );
+        let gpu = LinuxGpu::with_root(root).unwrap();
+        assert_eq!(gpu.discovered_gpu_bounds(), None);
+        assert_eq!(gpu.gpu_bounds().unwrap(), (300, 1100)); // display keeps Go fallbacks
+        gpu.set_gpu_freq(900).unwrap();
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "1100\n"
+        );
+        assert_eq!(
+            fs::read_to_string(card.join("gt_min_freq_mhz")).unwrap(),
+            "300\n"
+        );
+    }
+
+    /// A card whose writable `gt_max_freq_mhz` was ratcheted *down* by an earlier write
+    /// still discovers the true ceiling from `gt_RP0`, so the next write restores it
+    /// instead of shrinking the range forever.
+    #[test]
+    fn ratcheted_written_node_does_not_shrink_the_range() {
+        let (root, card) = card_root(
+            "ratchet",
+            &[
+                ("gt_RPn_freq_mhz", "300\n"),
+                ("gt_RP0_freq_mhz", "1100\n"),
+                ("gt_min_freq_mhz", "300\n"),
+                ("gt_max_freq_mhz", "500\n"), // left behind by an earlier write
+            ],
+        );
+        let gpu = LinuxGpu::with_root(root).unwrap();
+        assert_eq!(gpu.discovered_gpu_bounds(), Some((300, 1100)));
+        gpu.set_gpu_freq(99_999).unwrap();
+        assert_eq!(
+            fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),
+            "1100"
         );
     }
 }
