@@ -1,3 +1,10 @@
+// Shared, platform-agnostic plumbing. Compiled everywhere on purpose: the
+// macOS/Windows backends are pure CLI wrappers (plus one Win32 call), so keeping
+// their command/parse logic out of any `cfg` is what lets the Go-parity tests run
+// on this Linux host against fake binaries on `PATH`.
+pub mod exec;
+pub mod parse;
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]
@@ -5,14 +12,14 @@ pub use linux::*;
 #[cfg(target_os = "linux")]
 pub type PlatformBackend = linux::LinuxBackend;
 
-#[cfg(target_os = "macos")]
+// The macOS/Windows backends are compiled on every host; only the `PlatformBackend`
+// selection and the glob re-export stay platform-gated.
 pub mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
 #[cfg(target_os = "macos")]
 pub type PlatformBackend = macos::MacOsBackend;
 
-#[cfg(target_os = "windows")]
 pub mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;

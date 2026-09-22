@@ -225,3 +225,130 @@ writes.
    desde la Pi. El binario Go de referencia también (o `GOOS=linux GOARCH=amd64 go build` desde acá,
    que sí es válido porque Go cross-compila). Con Rust, cross-compilar a x86_64 desde la Pi requiere
    toolchain extra → no vale la pena.
+
+---
+
+## 6. macOS y Windows — paridad con el Go (`hal/backend_darwin.go`, `hal/backend_windows.go`)
+
+El Rust no tenía paridad: `macos/mod.rs` y `windows/mod.rs` devolvían valores inventados (rangos
+absolutos 1000..4500 MHz, límite 3500, EPP `balance` vs el `default` de Go, `is_charging` por
+PowerShell, perfiles `powercfg -setactive <GUID>` que Go no usa) y tenían **0 tests**. Ahora cada
+función de Go está portada, y los tests del Go están portados también.
+
+Los dos módulos se compilan en **todas** las plataformas (no sólo en la suya): son wrappers de CLI
+(salvo `GetSystemPowerStatus`, que va `cfg(windows)`), y esa decisión es la que permite que los tests
+de paridad corran acá en Linux contra binarios falsos en `PATH` (`crates/wattwarden-platform/src/
+{exec,parse}.rs`). `lib.rs` sigue re-exportándolos como `PlatformBackend` sólo en su plataforma.
+
+### 6.1 DarwinBackend → `wattwarden-platform::macos`
+
+| Go | Rust | Regla |
+|---|---|---|
+| `GetOS` | `MacOsBackend::os_name` | `"macOS"` (lo consume la TUI para elegir filas y la línea de resumen) |
+| `GetNumCPUs` | `CpuGovernor::num_cpus` | `available_parallelism` (Go `runtime.NumCPU`), fallback 1 |
+| `GetCores` | `CpuGovernor::online_cores` | = `num_cpus` |
+| `SetCores` | `CpuGovernor::set_online_cores` | no-op |
+| `GetFreqLimit` / `SetFreqLimit` | `freq_limit` / `set_freq_limit` | `set` no-op; `get` → `Err(Unsupported)` (Go devuelve 0 = "no hay control") |
+| `GetBatteryPercentage` | `PowerSource::battery_percentage` | `pmset -g batt`, dígitos antes del `%`, fallback 100 |
+| `IsCharging` | `is_charging` | `contains("AC Power") && !contains("discharging")`; `pmset` que falla ⇒ `""` ⇒ **false** (Go, no el `true` que había) |
+| `GetBatteryTime` | `time_remaining` | `H:MM remaining` → `H:MM`; si no, enchufado → `"Charging"`; si no → `"Calculating..."` |
+| `GetPowerConsumptionWatts` | `consumption_watts` | `ioreg -rn AppleSmartBattery`, `abs(Current)*Voltage/1e6`, 0 si falta alguno |
+| `GetRAPLPL1/PL2` + setters | `rapl: None` | macOS no expone RAPL → sin controlador |
+| `GetTurbo` / `SetTurbo` | `turbo_enabled` / `set_turbo_enabled` | `true` / no-op |
+| `GetEPP` / `SetEPP` | `energy_performance_preference` / `set_…` | **`"default"`** / no-op |
+| `GetGPUFreq` / `SetGPUFreq` | `gpu: None` | sin control de GPU |
+| `GetASPM` / `SetASPM` | `aspm: None` | sin ASPM |
+| `GetLCDBrightness` | `DisplayManager::brightness_percent` | `brightness -l`, `int(v*100)`, fallback 100 |
+| `SetLCDBrightness` | `set_brightness_percent` | clamp 1..100, `brightness 0.00..1.00` |
+| `GetBluetooth` | `peripherals::bluetooth_enabled` | `defaults read … ControllerPowerState` != "0" |
+| `SetBluetooth` | `set_bluetooth_enabled` | `defaults write … -int v` **y** `blueutil --power v` |
+| `getMacWifiDevice` / `GetWifiEnable` / `SetWifiEnable` | `wifi_enabled` / `set_wifi_enabled` | `networksetup -listallhardwareports` (fallback `en0`), `-getairportpower` / `-setairportpower` |
+| `GetWifiPowerSave` / `Set…` | tweaks | `false` / no-op |
+| `GetKbdBacklight` / `Set…` | peripherals | `false` / no-op |
+| `GetAudioPowerSave` / `Set…` | tweaks | `false` / no-op |
+| `GetAutosuspend` / `Set…` | tweaks | **`false`** / no-op (antes `true`) |
+| `GetWatchdog` / `SetWatchdog` | `nmi_watchdog` / `set_nmi_watchdog` | **`true`** / no-op (antes `false`) |
+| `GetVMWriteback` / `SetVMDirty` | `vm_writeback_seconds`(5) / set | Go 500 cs = 5 s (el default del trait reescala a 500 cs) |
+| `SetNMIWatchdog` | `set_nmi_watchdog` | no-op |
+| `SetBrightnessTarget` / `SetRefreshRate` / `SetHyprEffects` | — | no-op en Go; sin trait equivalente (no se inventó API) |
+| `ProcessPurge` | `process_purge` | `purge` |
+| `ApplyModePerformance` | `apply_mode_performance` | `pmset -a lowpowermode 0` + `tcpkeepalive 1` + `displaysleep 10` |
+| `ApplyModeExtreme` | `apply_mode_extreme` | `pmset -a lowpowermode 1` + `tcpkeepalive 0` + `displaysleep 3` |
+| `ApplyModeRestore` | `apply_mode_restore` | igual que Performance |
+| `getMacLoad` | `MacOsBackend::load_average` | `sysctl -n vm.loadavg`, primer campo; el lazo compartido divide por NCpu (Go divide dentro) |
+| `GetAutoBrightness` / `SetAutoBrightness` | `Config::auto_brightness` + `DaemonRunner` | compartido: el daemon relee la config |
+| `IsDaemonRunning` / `StopDaemon` / `StartAutoExtremeDaemon` | `DaemonRunner` + `PidManager` | compartido con Linux |
+
+**Sin par (Go tampoco lo implementa) → sigue `Unsupported`/ausente:** charge threshold, RAPL, GPU,
+ASPM, C-states y compositor activo. En Rust el patrón es `None`/`Err(Unsupported)`, nunca un rango
+absoluto inventado.
+
+### 6.2 WindowsBackend → `wattwarden-platform::windows`
+
+| Go | Rust | Regla |
+|---|---|---|
+| `GetOS` | `WindowsBackend::os_name` | `"Windows"` |
+| `GetNumCPUs` / `GetCores` / `SetCores` | `num_cpus` / `online_cores` / `set_online_cores` | = NCpu / no-op |
+| `GetFreqLimit` / `SetFreqLimit` | `freq_limit` / `set_freq_limit` | `set` no-op; `get` → `Err(Unsupported)` |
+| `getPowerStatus` | `get_power_status` | `kernel32!GetSystemPowerStatus` (FFI, sin fork), `cfg(windows)` |
+| `GetBatteryPercentage` | `battery_percentage` | `BatteryLifePercent` ≤100, fallback 100 |
+| `IsCharging` | `is_charging` | `ACLineStatus == 1`, fallback `true` |
+| `GetBatteryTime` | `time_remaining` | `"Charging"`/`"Calculating..."`/`"%dh %02dm"` |
+| `GetPowerConsumptionWatts` | `consumption_watts` | `powershell` BatteryStatus, `Voltage*Discharge/1e6` sólo descargando |
+| `GetRAPLPL1/PL2` + setters | `rapl: None` | sin RAPL |
+| `GetTurbo` | `turbo_enabled` | `powercfg /query … PERFBOOSTMODE` no es `0x00000000` |
+| `SetTurbo` | `set_turbo_enabled` | `2`/`0` en **AC y DC** + `-setactive` (antes faltaba DC) |
+| `GetEPP` / `SetEPP` | `energy_performance_preference` / set | **`"default"`** / no-op |
+| `GetGPUFreq` / `Set…` | `gpu: None` | sin control de GPU |
+| `GetASPM` / `Set…` | `aspm: None` | sin ASPM |
+| `GetLCDBrightness` | `brightness_percent` | `powershell` WmiMonitorBrightness, fallback 100 |
+| `SetLCDBrightness` | `set_brightness_percent` | clamp **0**..100 (Go permite 0), WmiSetBrightness |
+| `GetBluetooth` | `bluetooth_enabled` | `true` |
+| `SetBluetooth` | `set_bluetooth_enabled` | `powershell Set-Service bthserv Running/Stopped` (antes no-op) |
+| `GetWifiEnable` / `SetWifiEnable` | `wifi_enabled` / `set_wifi_enabled` | `netsh interface show/set interface` (antes `true`/no-op) |
+| `GetWifiPowerSave` / `Set…` | tweaks | `false` / no-op |
+| `GetKbdBacklight` / `Set…` | peripherals | `false` / no-op |
+| `GetAudioPowerSave` / `Set…` | tweaks | `false` / no-op |
+| `GetAutosuspend` / `Set…` | tweaks | **`false`** / no-op (antes `true`) |
+| `GetWatchdog` / `SetWatchdog` | `nmi_watchdog` / set | **`true`** / no-op (antes `false`) |
+| `GetVMWriteback` / `SetVMDirty` | `vm_writeback_seconds`(5) / set | 500 cs = 5 s |
+| `setWinProcThrottle` | `set_proc_throttle` | `PROCTHROTTLEMAX` clamp 1..100 en AC y DC + `-setactive` |
+| `ApplyModePerformance` / `ApplyModeRestore` | `apply_mode_performance` / `apply_mode_restore` | throttle 100 |
+| `ApplyModeExtreme` | `apply_mode_extreme` | throttle 1 + brillo 10 |
+| `getWinLoad` | `WindowsBackend::load_average` | `typeperf`, fracción `0..1` × NCpu para el lazo compartido |
+| `GetAutoBrightness` / `SetAutoBrightness` | `Config::auto_brightness` + `DaemonRunner` | compartido |
+| `IsDaemonRunning` / `StopDaemon` / `StartAutoExtremeDaemon` | `DaemonRunner` + `PidManager` | compartido |
+| `SetBrightnessTarget` / `SetRefreshRate` / `SetHyprEffects` / `SetNMIWatchdog` | — | no-op en Go; sin trait equivalente |
+
+**Sin par → `Unsupported`/ausente:** charge threshold, RAPL, GPU, ASPM, C-states, compositor.
+
+### 6.3 Tests
+
+Portados de `backend_darwin_test.go` y `backend_windows_test.go` (mismos binarios falsos en `PATH`,
+mismas aserciones) en los `mod tests` de cada backend. Además, toda la aritmética de parseo está en
+`crate::parse` (sin `cfg`), con un test por regla de Go; eso es lo que corre en Linux. Detalle y
+resultados en `delegacion/EVIDENCIA-mac-win.md`.
+
+### 6.4 No verificado en hardware
+
+No hay máquina Apple ni Windows en este entorno, y no se puede linkear contra `kernel32` desde Linux
+(no hay MinGW/SDK). Verificado: los 5 `clippy --all-targets -- -D warnings` (host + 4 targets) y los
+tests de paridad de macOS/Windows ejecutados en Linux. **No verificado en hardware**: la ejecución
+real de `pmset`/`ioreg`/`networksetup`/`brightness`/`blueutil` en macOS y de `GetSystemPowerStatus`/
+`powercfg`/`powershell`/`netsh`/`typeperf` en Windows, ni el link contra `kernel32`.
+
+### 6.5 Dashboard: `GetOS()` decide filas y línea de resumen
+
+Go `buildMenuItems` (`ui/cli.go:350-585`) arma un menú distinto según `GetOS()` (Linux trae
+HARDWARE LIMITS/PERIPHERALS/SYSTEM TWEAKS; Windows sólo HARDWARE LIMITS con Turbo + PERIPHERALS &
+NETWORKING + SYSTEM MEMORY; macOS sólo PERIPHERALS & NETWORKING + SYSTEM MEMORY), y la línea de
+resumen (`cli.go:171-172`) es una sola para todas: `OS: %s | Battery: %d%% (%s) | Est: %s | Power:
+%.1fW`.
+
+El Rust tenía la lista de Linux cableada en todas las plataformas y la línea de resumen con
+`"OS: Linux"` fijo. Ahora `MacOsBackend/WindowsBackend/LinuxBackend/FallbackBackend::os_name()`
+(Go `GetOS()`) alimenta `build_menu(os)` y `summary_line(...)`, con tests golden por OS. El `match`
+es en runtime (no `cfg`) a propósito: así todos los `ActionItem` se construyen en todos los targets y
+los que esa plataforma esconde no disparan `dead_code` en el clippy cruzado. `AutoExtremeLevel` es la
+única fila extra (extensión Rust documentada en §4) y `k`/`j`/`h`/`l` los únicos atajos extra; las
+teclas `w`/`s`/`a`/`d` aceptan mayúscula y minúscula como Go.
