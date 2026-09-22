@@ -67,8 +67,24 @@ MID="$(git rev-parse HEAD)"
 
 # ---------- 2) Junior: Command Code ----------
 log "=== Junior (command-code) arrancando ==="
-MODEL="${WATTWARDEN_JUNIOR_MODEL:-meta/muse-spark-1.3-contributor}"
+MODEL="${WATTWARDEN_JUNIOR_MODEL:-meta/muse-spark-1.3}"
 log "modelo junior: $MODEL"
+
+# Pre-flight del modelo: un modelo puede estar LISTADO y devolver 404 (pasó el 22/09 con
+# muse-spark-1.3-contributor: 65 min de ronda quemados sin imprimir nada). Probe corto antes.
+probe_model() {
+  timeout 90 "$CC" -p "Respondé exactamente: OK" -m "$1" --trust --dangerously-skip-permissions \
+    --max-turns 2 --skip-onboarding 2>&1 | grep -qx "OK"
+}
+if ! probe_model "$MODEL"; then
+  log "modelo $MODEL no responde -> buscando reemplazo verificado"
+  for m in meta/muse-spark-1.3 deepseek/deepseek-v4-flash meta/muse-spark-1.2 meta/muse-spark-1.1; do
+    if [ "$m" != "$MODEL" ] && probe_model "$m"; then
+      MODEL="$m"; log "modelo de reemplazo verificado: $m"; break
+    fi
+  done
+fi
+log "modelo final: $MODEL"
 PROMPT_JUNIOR="${PROMPT_JUNIOR:-delegacion/prompt-junior.md}"
 CC_ARGS=(-p "$(cat "$PROMPT_JUNIOR")" --trust --dangerously-skip-permissions --tools-all --max-turns 240 -m "$MODEL")
 has_flag "$CC" --skip-onboarding && CC_ARGS+=(--skip-onboarding)
