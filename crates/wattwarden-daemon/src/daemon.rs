@@ -349,10 +349,13 @@ impl DaemonRunner {
     }
 
     pub fn apply_logic(&self) {
+        // Go `applyLogic()` runs on every 5 s tick unconditionally
+        // (`hal/backend_linux.go:918-992`): `IsCharging()` alone decides the
+        // branch, never a config flag. Gating on `auto_extreme_enabled` left
+        // the machine untouched while plugged in (the A/B 3-DIF bug: the
+        // config profile beat the restore path).
         let config = self.config();
-        if config.auto_extreme_enabled {
-            self.apply_logic_step(&config);
-        }
+        self.apply_logic_step(&config);
     }
 
     pub async fn run(self) -> Result<()> {
@@ -692,6 +695,115 @@ mod tests {
         );
         assert_eq!(read(&root, &format!("{DRM}/card0/gt_max_freq_mhz")), "620");
         assert_eq!(read(&root, &format!("{CPU}/intel_pstate/no_turbo")), "0");
+
+        let _ = fs::remove_dir_all(root.root());
+    }
+
+    /// A/B regression test for the CARGA/RESTORE branch
+    /// (`scripts/ab_parity.sh` on the Vostro, plugged in): with `IsCharging()`
+    /// true the Go daemon (`hal/backend_linux.go:919-935`) restores full power —
+    /// `SetRAPLPL1(115)` + `SetRAPLPL2(115)` clamped to the hardware max range
+    /// and `SetEPP("performance")` (which forces governor `performance` on every
+    /// cpu, `backend_linux.go:380-386`). Fails if anyone routes the charging
+    /// path through `PowerProfile::Normal` again (45/65 W, `powersave`).
+    #[test]
+    fn test_e_charging_restore_matches_go_115w_and_performance_governor() {
+        // Dell Vostro shape: RAPL range 0..115 W so the Go clamp lands on 115 W
+        // in both constraints, like the real machine in the A/B report.
+        let dir = std::env::temp_dir().join(format!("ww_daemon_test_e_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let root = SysfsRoot::new(&dir);
+
+        for i in 0..4 {
+            let base = format!("{CPU}/cpu{i}");
+            write(
+                &root,
+                &format!("{base}/cpufreq/cpuinfo_min_freq"),
+                "400000\n",
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/cpuinfo_max_freq"),
+                "4200000\n",
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/scaling_min_freq"),
+                "400000\n",
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/scaling_max_freq"),
+                "4200000\n",
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/energy_performance_preference"),
+                "balance_performance\n",
+            );
+            write(
+                &root,
+                &format!("{base}/cpufreq/scaling_governor"),
+                "powersave\n",
+            );
+            if i > 0 {
+                write(&root, &format!("{base}/online"), "1\n");
+            }
+        }
+        write(&root, &format!("{CPU}/intel_pstate/no_turbo"), "1\n");
+
+        // Go `GetRAPLBounds` reads `max_power_range_uw`; 115 W is the max of the
+        // range, not a literal baked into the daemon (`backend_linux.go:279-289`).
+        write(&root, &format!("{RAPL}/min_power_range_uw"), "0\n");
+        write(&root, &format!("{RAPL}/max_power_range_uw"), "115000000\n");
+        write(&root, &format!("{RAPL}/constraint_0_name"), "long_term\n");
+        write(&root, &format!("{RAPL}/constraint_1_name"), "short_term\n");
+        write(
+            &root,
+            &format!("{RAPL}/constraint_0_power_limit_uw"),
+            "45000000\n",
+        );
+        write(
+            &root,
+            &format!("{RAPL}/constraint_1_power_limit_uw"),
+            "65000000\n",
+        );
+
+        // Plugged in: Go `IsCharging` sees `Mains` + `online == "1"`
+        // (`backend_linux.go:165-178`).
+        write(&root, &format!("{BAT}/type"), "Battery\n");
+        write(&root, &format!("{BAT}/status"), "Charging\n");
+        write(&root, "sys/class/power_supply/AC/type", "Mains\n");
+        write(&root, "sys/class/power_supply/AC/online", "1\n");
+
+        // The pre-existing AC branch of `apply_logic_step` is the restore path;
+        // assert it writes exactly what Go writes on the Vostro.
+        let backend = LinuxBackend::with_root(root.clone()).unwrap();
+        assert!(backend.battery.is_charging().unwrap());
+        let config = Config {
+            auto_extreme_enabled: true,
+            ..Default::default()
+        };
+        let runner = DaemonRunner::with_paths(backend, None, None);
+        let res = runner.apply_logic_step(&config);
+        assert!(res.is_charging);
+        assert_eq!(res.target_rapl, 115);
+        assert_eq!(res.target_epp, "performance");
+
+        assert_eq!(
+            read(&root, &format!("{RAPL}/constraint_0_power_limit_uw")),
+            "115000000"
+        );
+        assert_eq!(
+            read(&root, &format!("{RAPL}/constraint_1_power_limit_uw")),
+            "115000000"
+        );
+        for i in 0..4 {
+            assert_eq!(
+                read(&root, &format!("{CPU}/cpu{i}/cpufreq/scaling_governor")),
+                "performance"
+            );
+        }
 
         let _ = fs::remove_dir_all(root.root());
     }

@@ -141,7 +141,7 @@ impl AutoExtremeLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default)]
+    #[serde(default = "default_auto_extreme_enabled")]
     pub auto_extreme_enabled: bool,
     #[serde(default)]
     pub auto_extreme_level: AutoExtremeLevel,
@@ -155,6 +155,10 @@ pub struct Config {
     pub terminal_brightness: u8,
     #[serde(default = "default_gui_brightness")]
     pub gui_brightness: u8,
+}
+
+fn default_auto_extreme_enabled() -> bool {
+    true
 }
 
 fn default_auto_brightness() -> bool {
@@ -176,7 +180,7 @@ fn default_gui_brightness() -> u8 {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            auto_extreme_enabled: false,
+            auto_extreme_enabled: true,
             auto_extreme_level: AutoExtremeLevel::High,
             auto_brightness: true,
             profile: PowerProfile::Normal,
@@ -322,6 +326,29 @@ mod tests {
     fn test_config_without_level_field_defaults_high() {
         let cfg: Config = serde_json::from_str(r#"{"profile":"Normal"}"#).unwrap();
         assert_eq!(cfg.auto_extreme_level, AutoExtremeLevel::High);
+    }
+
+    /// Go `service.LoadConfig` (`service.go:48-58`): missing file or missing
+    /// keys fall back to `auto_extreme_enabled = true, auto_brightness = true`.
+    /// A Go-written JSON (`{"auto_extreme_enabled":true,"auto_brightness":false}`)
+    /// must parse in Rust with `auto_brightness == false`, and a Rust-written
+    /// config must stay readable with only those two keys (Go ignores the
+    /// unknown extra fields).
+    #[test]
+    fn test_go_config_json_round_trip() {
+        let go_json = r#"{"auto_extreme_enabled":true,"auto_brightness":false}"#;
+        let cfg: Config = serde_json::from_str(go_json).unwrap();
+        assert!(cfg.auto_extreme_enabled);
+        assert!(!cfg.auto_brightness);
+
+        let missing_keys: Config = serde_json::from_str(r#"{"profile":"Normal"}"#).unwrap();
+        assert!(missing_keys.auto_extreme_enabled);
+        assert!(missing_keys.auto_brightness);
+
+        let written = serde_json::to_string(&Config::default()).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(back["auto_extreme_enabled"], serde_json::Value::Bool(true));
+        assert_eq!(back["auto_brightness"], serde_json::Value::Bool(true));
     }
 
     #[test]
