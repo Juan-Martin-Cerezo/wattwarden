@@ -250,6 +250,12 @@ impl FallbackBackend {
         })
     }
 
+    /// No Go backend exists for an unrecognised OS; the dashboard treats this like
+    /// Go's `else` branch of `buildMenuItems` (profiles only).
+    pub fn os_name(&self) -> &'static str {
+        "Unknown"
+    }
+
     /// No portable load average exists for an unrecognised platform, so the shared
     /// ladder stays on its idle step instead of guessing at one.
     pub fn load_average(&self) -> f64 {
@@ -301,6 +307,7 @@ mod tests {
     #[test]
     fn test_fallback_backend_zero_panic_guarantee() {
         let backend = FallbackBackend::new().expect("fallback backend must never fail");
+        assert_eq!(backend.os_name(), "Unknown");
         assert!(backend.battery.is_stationary());
         assert_eq!(backend.battery.battery_percentage().unwrap(), 100);
         assert!(backend.battery.is_charging().unwrap());

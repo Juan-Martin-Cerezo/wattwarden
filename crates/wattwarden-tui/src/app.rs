@@ -101,6 +101,103 @@ pub fn go_duration(d: Duration) -> String {
     format!("{secs}s")
 }
 
+/// Go `buildMenuItems` (`cli.go:350-585`): the row set and order depend on `GetOS()`.
+///
+/// A runtime `match` on the OS name — not `cfg` — is deliberate: every `ActionItem`
+/// stays *constructed* on every target, so the rows the current OS hides do not trip
+/// `dead_code` under `clippy -D warnings` on the cross targets. An unrecognised OS
+/// gets the profiles section only, exactly like Go's `if/else if` chain.
+fn build_menu(os_name: &str) -> Vec<ActionItem> {
+    let mut items = vec![
+        ActionItem::Header("─── [ PROFILES ] ───────────────────────".into()),
+        ActionItem::ProfilePerformance,
+        ActionItem::ProfileExtreme,
+        ActionItem::ProfileAutoExtreme,
+        ActionItem::AutoExtremeLevel,
+        ActionItem::AutoBrightness,
+        ActionItem::ProfileRestore,
+        ActionItem::Header(String::new()),
+    ];
+
+    match os_name {
+        "Linux" => {
+            items.push(ActionItem::Header(
+                "─── [ HARDWARE LIMITS ] ────────────────".into(),
+            ));
+            items.extend([
+                ActionItem::Cores,
+                ActionItem::FreqLimit,
+                ActionItem::GpuFreq,
+                ActionItem::RaplPl1,
+                ActionItem::RaplPl2,
+                ActionItem::Turbo,
+                ActionItem::Epp,
+                ActionItem::Aspm,
+            ]);
+            items.push(ActionItem::Header(String::new()));
+            items.push(ActionItem::Header(
+                "─── [ PERIPHERALS ] ────────────────────".into(),
+            ));
+            items.extend([
+                ActionItem::Brightness,
+                ActionItem::KbdBacklight,
+                ActionItem::Bluetooth,
+                ActionItem::WifiEnable,
+            ]);
+            items.push(ActionItem::Header(String::new()));
+            items.push(ActionItem::Header(
+                "─── [ SYSTEM TWEAKS ] ──────────────────".into(),
+            ));
+            items.extend([
+                ActionItem::WifiPowerSave,
+                ActionItem::AudioPowerSave,
+                ActionItem::Autosuspend,
+                ActionItem::Watchdog,
+                ActionItem::VmWriteback,
+                ActionItem::ProcessPurge,
+            ]);
+        }
+        "Windows" => {
+            items.push(ActionItem::Header(
+                "─── [ HARDWARE LIMITS ] ────────────────".into(),
+            ));
+            items.push(ActionItem::Turbo);
+            items.push(ActionItem::Header(String::new()));
+            items.push(ActionItem::Header(
+                "─── [ PERIPHERALS & NETWORKING ] ──────".into(),
+            ));
+            items.extend([
+                ActionItem::Brightness,
+                ActionItem::WifiEnable,
+                ActionItem::Bluetooth,
+            ]);
+            items.push(ActionItem::Header(String::new()));
+            items.push(ActionItem::Header(
+                "─── [ SYSTEM MEMORY ] ──────────────────".into(),
+            ));
+            items.push(ActionItem::ProcessPurge);
+        }
+        "macOS" => {
+            items.push(ActionItem::Header(
+                "─── [ PERIPHERALS & NETWORKING ] ──────".into(),
+            ));
+            items.extend([
+                ActionItem::Brightness,
+                ActionItem::WifiEnable,
+                ActionItem::Bluetooth,
+            ]);
+            items.push(ActionItem::Header(String::new()));
+            items.push(ActionItem::Header(
+                "─── [ SYSTEM MEMORY ] ──────────────────".into(),
+            ));
+            items.push(ActionItem::ProcessPurge);
+        }
+        _ => {}
+    }
+
+    items
+}
+
 pub struct App {
     pub backend: LinuxBackend,
     pub config: Config,
@@ -122,42 +219,8 @@ pub struct App {
 
 impl App {
     pub fn new(backend: LinuxBackend, config: Config) -> Self {
-        // Go `buildMenuItems` always shows every row on Linux; missing hardware is
-        // reported as `N/A` by the getters instead of hiding the entry. The three
-        // `Header("")` entries are the blank spacers Go inserts between sections.
-        let items = vec![
-            ActionItem::Header("─── [ PROFILES ] ───────────────────────".into()),
-            ActionItem::ProfilePerformance,
-            ActionItem::ProfileExtreme,
-            ActionItem::ProfileAutoExtreme,
-            ActionItem::AutoExtremeLevel,
-            ActionItem::AutoBrightness,
-            ActionItem::ProfileRestore,
-            ActionItem::Header(String::new()),
-            ActionItem::Header("─── [ HARDWARE LIMITS ] ────────────────".into()),
-            ActionItem::Cores,
-            ActionItem::FreqLimit,
-            ActionItem::GpuFreq,
-            ActionItem::RaplPl1,
-            ActionItem::RaplPl2,
-            ActionItem::Turbo,
-            ActionItem::Epp,
-            ActionItem::Aspm,
-            ActionItem::Header(String::new()),
-            ActionItem::Header("─── [ PERIPHERALS ] ────────────────────".into()),
-            ActionItem::Brightness,
-            ActionItem::KbdBacklight,
-            ActionItem::Bluetooth,
-            ActionItem::WifiEnable,
-            ActionItem::Header(String::new()),
-            ActionItem::Header("─── [ SYSTEM TWEAKS ] ──────────────────".into()),
-            ActionItem::WifiPowerSave,
-            ActionItem::AudioPowerSave,
-            ActionItem::Autosuspend,
-            ActionItem::Watchdog,
-            ActionItem::VmWriteback,
-            ActionItem::ProcessPurge,
-        ];
+        // Go `buildMenuItems` selects the row set from `GetOS()` (`cli.go:350-585`).
+        let items = build_menu(backend.os_name());
 
         // Go `d.selected = 1` (first non-header entry, skipping the PROFILES title).
         let initial_selected = items.iter().position(|i| !i.is_header()).unwrap_or(0);
@@ -743,5 +806,91 @@ mod tests {
                 "{item:?} must not stop the daemon"
             );
         }
+    }
+
+    /// Go `buildMenuItems` (`cli.go:350-585`): the dashboard shows a different row set
+    /// per `GetOS()`, with the exact section headers. Locked down per OS.
+    #[test]
+    fn golden_menu_matches_go_per_os() {
+        use ActionItem::*;
+
+        let h_profiles = Header("─── [ PROFILES ] ───────────────────────".into());
+        let h_hw = Header("─── [ HARDWARE LIMITS ] ────────────────".into());
+        let h_per = Header("─── [ PERIPHERALS ] ────────────────────".into());
+        let h_per_net = Header("─── [ PERIPHERALS & NETWORKING ] ──────".into());
+        let h_tweaks = Header("─── [ SYSTEM TWEAKS ] ──────────────────".into());
+        let h_mem = Header("─── [ SYSTEM MEMORY ] ──────────────────".into());
+        let blank = Header(String::new());
+
+        // The PROFILES block is shared by every OS (AutoExtremeLevel is the documented
+        // Rust-only extension from PARITY.md §4).
+        let profiles = vec![
+            h_profiles,
+            ProfilePerformance,
+            ProfileExtreme,
+            ProfileAutoExtreme,
+            AutoExtremeLevel,
+            AutoBrightness,
+            ProfileRestore,
+            blank.clone(),
+        ];
+
+        let mut linux = profiles.clone();
+        linux.extend([
+            h_hw.clone(),
+            Cores,
+            FreqLimit,
+            GpuFreq,
+            RaplPl1,
+            RaplPl2,
+            Turbo,
+            Epp,
+            Aspm,
+            blank.clone(),
+            h_per,
+            Brightness,
+            KbdBacklight,
+            Bluetooth,
+            WifiEnable,
+            blank.clone(),
+            h_tweaks,
+            WifiPowerSave,
+            AudioPowerSave,
+            Autosuspend,
+            Watchdog,
+            VmWriteback,
+            ProcessPurge,
+        ]);
+        assert_eq!(build_menu("Linux"), linux);
+
+        let mut windows = profiles.clone();
+        windows.extend([
+            h_hw,
+            Turbo,
+            blank.clone(),
+            h_per_net.clone(),
+            Brightness,
+            WifiEnable,
+            Bluetooth,
+            blank.clone(),
+            h_mem.clone(),
+            ProcessPurge,
+        ]);
+        assert_eq!(build_menu("Windows"), windows);
+
+        let mut macos = profiles.clone();
+        macos.extend([
+            h_per_net,
+            Brightness,
+            WifiEnable,
+            Bluetooth,
+            blank,
+            h_mem,
+            ProcessPurge,
+        ]);
+        assert_eq!(build_menu("macOS"), macos);
+
+        // Go's `if/else if` adds no platform section for an unrecognised OS name.
+        assert_eq!(build_menu("FreeBSD"), profiles);
     }
 }

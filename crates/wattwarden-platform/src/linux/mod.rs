@@ -78,6 +78,12 @@ impl LinuxBackend {
         self.hyprland.root()
     }
 
+    /// Go `GetOS()` (`backend_linux.go:41`). The dashboard uses it to pick the menu
+    /// rows and the summary line.
+    pub fn os_name(&self) -> &'static str {
+        "Linux"
+    }
+
     /// 1-minute system load, in the units `/proc/loadavg` reports: the shared
     /// adaptive ladder normalizes it by the CPU count. `0.0` (the idle step) when the
     /// node is missing or unparsable, exactly like the Go `readSys(..)` + `Atoi` pair.
@@ -216,5 +222,19 @@ impl LinuxBackend {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Go `GetOS()` (`backend_linux.go:41`); the dashboard matches on this string to
+    /// pick its menu rows.
+    #[test]
+    fn os_name_matches_go() {
+        let backend =
+            LinuxBackend::with_root(SysfsRoot::new("/nonexistent/wattwarden-os-name")).unwrap();
+        assert_eq!(backend.os_name(), "Linux");
     }
 }

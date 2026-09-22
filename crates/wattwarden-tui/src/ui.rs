@@ -18,6 +18,13 @@ const ASCII_LOGO: &[&str] = &[
 
 const BLOCKS: [char; 9] = [' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
+/// Go `drawUI` summary line (`cli.go:171-172`): a single format for every OS, using
+/// the backend's own `GetOS()` and `Charging`/`Discharging` from `IsCharging()`.
+fn summary_line(os: &str, battery_pct: u8, charging: bool, est: &str, watts: f64) -> String {
+    let status = if charging { "Charging" } else { "Discharging" };
+    format!("OS: {os} | Battery: {battery_pct}% ({status}) | Est: {est} | Power: {watts:.1}W")
+}
+
 fn set_str(buf: &mut Buffer, x: usize, y: usize, text: &str, style: Style) {
     let w = buf.area.width as usize;
     let h = buf.area.height as usize;
@@ -58,28 +65,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     // 2. Centered Status Summary Line
-    let is_stationary = app.backend.battery.is_stationary();
-    let summary = if is_stationary {
-        "OS: Linux | Power: AC Mains (Stationary Workstation) | Battery: None".to_string()
-    } else {
-        let is_charging = app.backend.battery.is_charging().unwrap_or(false);
-        let batt_pct = app.backend.battery.battery_percentage().unwrap_or(0);
-        let watts = app.backend.battery.consumption_watts().unwrap_or(0.0);
-        let est = app
-            .backend
+    let summary = summary_line(
+        app.backend.os_name(),
+        app.backend.battery.battery_percentage().unwrap_or(0),
+        app.backend.battery.is_charging().unwrap_or(false),
+        &app.backend
             .battery
             .time_remaining()
-            .unwrap_or_else(|_| "N/A".into());
-        let status_str = if is_charging {
-            "Charging"
-        } else {
-            "Discharging"
-        };
-        format!(
-            "OS: Linux | Battery: {}% ({}) | Est: {} | Power: {:.1}W",
-            batt_pct, status_str, est, watts
-        )
-    };
+            .unwrap_or_else(|_| "N/A".into()),
+        app.backend.battery.consumption_watts().unwrap_or(0.0),
+    );
     let info_y = art_y + ASCII_LOGO.len() + 1;
     let info_x = (w.saturating_sub(summary.len())) / 2;
     set_str(
@@ -712,5 +707,24 @@ mod tests {
     fn golden_lcd_brightness_value_has_no_percent_sign() {
         assert_eq!(format!("[{}]", 100), "[100]");
         assert_eq!(format!("[{}]", 0), "[0]");
+    }
+
+    /// Go `drawUI` summary (`cli.go:171-172`): the OS comes from `GetOS()` and the
+    /// battery state from `IsCharging()`, one format for every platform. Locked down
+    /// because the line used to be hardcoded to `"OS: Linux"`.
+    #[test]
+    fn golden_summary_line_matches_go() {
+        assert_eq!(
+            summary_line("Linux", 82, false, "4:12", 12.0),
+            "OS: Linux | Battery: 82% (Discharging) | Est: 4:12 | Power: 12.0W"
+        );
+        assert_eq!(
+            summary_line("macOS", 100, true, "Charging", 0.0),
+            "OS: macOS | Battery: 100% (Charging) | Est: Charging | Power: 0.0W"
+        );
+        assert_eq!(
+            summary_line("Windows", 50, false, "1h 12m", 8.4),
+            "OS: Windows | Battery: 50% (Discharging) | Est: 1h 12m | Power: 8.4W"
+        );
     }
 }

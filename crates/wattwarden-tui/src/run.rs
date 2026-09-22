@@ -119,16 +119,19 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             KeyCode::Char('-') => {
                 app.speed_down();
             }
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => {
+            // Go accepts both cases for its `w`/`s`/`a`/`d` movement keys
+            // (`cli.go:651-679`); the vim `k`/`j`/`h`/`l` bindings are a Rust-only
+            // addition.
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') | KeyCode::Char('W') => {
                 app.prev_menu();
             }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('s') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('s') | KeyCode::Char('S') => {
                 app.next_menu();
             }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('a') => {
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('a') | KeyCode::Char('A') => {
                 app.handle_left();
             }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') => {
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') | KeyCode::Char('D') => {
                 app.handle_right();
             }
             KeyCode::Enter => {
