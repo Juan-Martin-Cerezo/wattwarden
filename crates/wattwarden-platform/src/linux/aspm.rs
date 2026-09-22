@@ -73,7 +73,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ww_aspm_{tag}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let path = dir.join(ASPM_POLICY_PATH);
-        let _ = fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
         SysfsRoot::new(dir)
     }
@@ -107,7 +107,7 @@ mod tests {
     fn missing_parameter_is_reported() {
         let dir = std::env::temp_dir().join(format!("ww_aspm_none_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let _ = fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).unwrap();
         assert!(LinuxAspm::with_root(SysfsRoot::new(dir)).is_err());
     }
 }

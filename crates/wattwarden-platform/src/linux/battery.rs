@@ -142,10 +142,10 @@ impl PowerSource for LinuxBattery {
         for name in self.root.names(POWER_SUPPLY_BASE) {
             let rel = format!("{POWER_SUPPLY_BASE}/{name}");
             let supply_type = self.root.read(&format!("{rel}/type"));
-            if supply_type == "Mains" || supply_type == "USB_C" || supply_type == "USB" {
-                if self.root.read(&format!("{rel}/online")) == "1" {
-                    return Ok(true);
-                }
+            if (supply_type == "Mains" || supply_type == "USB_C" || supply_type == "USB")
+                && self.root.read(&format!("{rel}/online")) == "1"
+            {
+                return Ok(true);
             }
         }
 

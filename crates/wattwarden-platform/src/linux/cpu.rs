@@ -6,15 +6,15 @@
 //! * `GetCores`    -> `1 + count(cpuN/online == "1")` (cpu0 assumed online)
 //! * `SetCores`    -> clamp 1..NumCPUs, write `online`, then **re-apply** `SetFreqLimit(GetFreqLimit())`
 //! * `GetCPUFreqBounds` -> `cpu0/cpufreq/cpuinfo_{min,max}_freq` /1000, fallback 400/1600
-//! * `GetFreqLimit`     -> `cpu0/cpufreq/scaling_max_freq` /1000
-//! * `SetFreqLimit`     -> clamp, write `scaling_min_freq` = min and `scaling_max_freq` = mhz
-//!                         on **every** `cpu*/cpufreq`
+//! * `GetFreqLimit` -> `cpu0/cpufreq/scaling_max_freq` /1000
+//! * `SetFreqLimit` -> clamp, write `scaling_min_freq` = min and `scaling_max_freq` = mhz
+//!   on **every** `cpu*/cpufreq`
 //! * `GetTurbo`/`SetTurbo` -> `intel_pstate/no_turbo` ("0" = on), else `cpufreq/boost`
-//!                            ("1" = on), else default `true`
-//! * `GetEPP`/`SetEPP`  -> `cpu0/cpufreq/energy_performance_preference`; writes **all**
-//!                         `cpu*/cpufreq/energy_performance_preference` plus the governor
-//!                         (`performance` when pref == "performance", otherwise `powersave`)
-//!                         on **all** `cpu*/cpufreq/scaling_governor`
+//!   ("1" = on), else default `true`
+//! * `GetEPP`/`SetEPP` -> `cpu0/cpufreq/energy_performance_preference`; writes **all**
+//!   `cpu*/cpufreq/energy_performance_preference` plus the governor
+//!   (`performance` when pref == "performance", otherwise `powersave`)
+//!   on **all** `cpu*/cpufreq/scaling_governor`
 
 use crate::linux::sysfs::SysfsRoot;
 use wattwarden_core::{CStateInfo, CStateTelemetry, CpuGovernor, Result, WattWardenError};

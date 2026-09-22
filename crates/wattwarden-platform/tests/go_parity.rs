@@ -5,7 +5,6 @@
 //! binarios externos. Todo pasa por `WATTWARDEN_SYSFS_ROOT` vía `SysfsRoot::new(dir)`.
 
 use std::fs;
-use std::path::PathBuf;
 use wattwarden_core::{
     AspmController, CpuGovernor, DisplayManager, GpuController, PeripheralsController, PowerSource,
     RaplController, SystemTweaksController,
@@ -266,7 +265,8 @@ fn e_gpu_bounds_and_write_order_match_go() {
     // Si aparece card1 (dGPU), gana card1 — exactamente el orden de Go.
     write(&root, &format!("{DRM}/card1/gt_max_freq_mhz"), "1500\n");
     let gpu2 = LinuxGpu::with_root(root.clone()).unwrap();
-    assert_eq!(gpu2.gpu_bounds().unwrap(), (300, 1100)); // RPn/RP0 ausentes -> fallback
+    // Go backend_linux.go:407-408: gt_RP0_freq_mhz ausente -> lee gt_max_freq_mhz (1500)
+    assert_eq!(gpu2.gpu_bounds().unwrap(), (300, 1500));
 
     let _ = fs::remove_dir_all(root.root());
 }

@@ -183,7 +183,7 @@ mod tests {
     fn root(tag: &str) -> SysfsRoot {
         let dir = std::env::temp_dir().join(format!("ww_tweaks_{tag}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let _ = fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).unwrap();
         SysfsRoot::new(dir)
     }
 

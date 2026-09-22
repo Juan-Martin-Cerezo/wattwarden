@@ -17,7 +17,7 @@ use crate::linux::cmd;
 use crate::linux::sysfs::SysfsRoot;
 use wattwarden_core::{PeripheralsController, Result};
 
-const LEDS_BASE: &str = "class/leds";
+const LEDS_BASE: &str = "sys/class/leds";
 const KBD_SUFFIX: &str = "kbd_backlight";
 
 #[derive(Debug, Clone)]
@@ -117,7 +117,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ww_periph_{tag}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let led = dir.join(LEDS_BASE).join("dell::kbd_backlight");
-        let _ = fs::create_dir_all(&led).unwrap();
+        fs::create_dir_all(&led).unwrap();
         fs::write(led.join("brightness"), "0\n").unwrap();
         fs::write(led.join("max_brightness"), "2\n").unwrap();
         (SysfsRoot::new(dir), led)
@@ -144,7 +144,7 @@ mod tests {
         // "not blocked" unless the tool explicitly says otherwise.
         let dir = std::env::temp_dir().join(format!("ww_periph_none_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let _ = fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).unwrap();
         let p = LinuxPeripherals::with_root(SysfsRoot::new(dir));
         assert!(!p.kbd_backlight().unwrap());
         p.set_kbd_backlight(true).unwrap();
