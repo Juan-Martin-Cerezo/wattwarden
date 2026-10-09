@@ -1,70 +1,58 @@
 # System Architecture ⚙️
+> **WattWarden Architecture Specification (Rust Edition)**
 
-WattWarden uses a highly modular, decoupled architecture focused on performance, maintainability, and cross-platform compatibility.
+WattWarden is designed around the principles of **Universal Silicon Polymorphism**, zero-overhead asynchronous event handling, and strict decoupling between hardware drivers and presentation layers.
 
-## Core Design Principles
+---
 
-1. **Strict Decoupling**: The User Interface (`ui/`) has absolutely zero knowledge of how hardware limits are actually enforced. It merely calls interface methods.
-2. **Hardware Abstraction Layer (HAL)**: All hardware interactions are routed through a unified interface (`hal/backend.go`). This allows the system to easily adapt to Windows, macOS, or Linux.
-3. **No External Dependencies for Hardware**: We avoid third-party libraries for hardware access. On Linux, this is achieved by reading and writing directly to the kernel's `/sys/` pseudo-filesystem.
+## 🏛️ Foundational Principles
+Read [`PHILOSOPHY.md`](PHILOSOPHY.md) for the complete 5 Cardinal Axioms governing hardware abstraction and graceful degradation. All AI-driven refactoring must follow [`AGENTS.md`](AGENTS.md).
 
-## Directory Structure
+---
 
-```
+## 📦 Workspace Crate Layout
+
+```text
 wattwarden/
-├── main.go               # Entry point, verifies permissions and injects backend
-├── privilege_unix.go     # Unix root privilege check
-├── privilege_windows.go  # Windows administrator privilege check
-├── install.sh            # Universal installation script (detects OS and 32/64-bit architectures)
-├── .github/workflows/release.yml # Builds and publishes tagged releases
-├── ARCHITECTURE.md       # Architecture specification
-├── README.md             # Project user guide
-├── hal/                  # Hardware Abstraction Layer
-│   ├── backend.go        # Defines the `Backend` interface that all OS-specific files must implement
-│   ├── backend_linux.go  # Linux implementation using sysfs and uevent fallbacks
-│   ├── backend_linux_test.go # Unit tests verifying Linux hardware getters
-│   ├── backend_darwin.go # macOS native implementation (pmset)
-│   └── backend_windows.go# Windows native implementation (powercfg, WMI)
-└── ui/                   # Terminal User Interface
-    └── cli.go            # Draws the TUI, manages state, handles user input using `tcell`
+├── Cargo.toml                      # Workspace root & shared dependency definitions
+├── crates/
+│   ├── wattwarden-core/            # Hardware abstraction traits, typestates, capabilities, config
+│   ├── wattwarden-platform-linux/  # Kernel Netlink, sysfs, RAPL, DRM, and Wayland IPC
+│   ├── wattwarden-daemon/          # Asynchronous Tokio event loop & systemd service controller
+│   ├── wattwarden-tui/             # High-performance Ratatui terminal dashboard
+│   └── wattwarden-cli/             # Unified binary CLI dispatcher (clap v4)
+├── PHILOSOPHY.md                   # Core philosophy & graceful degradation doctrine
+├── AGENTS.md                       # AI agent guidelines & coding constraints
+└── CONTRIBUTING.md                 # Development & contribution standards
 ```
 
-## How It Works
+---
 
-### The Hardware Abstraction Layer (HAL)
-The `Backend` interface dictates what actions a platform *must* support, such as:
-- `GetNumCPUs() int`
-- `SetFreqLimit(mhz int)`
-- `GetBatteryPercentage() int`
-- `GetPowerConsumptionWatts() float64`
-- `ApplyModeExtreme()`
+## 🧩 Subsystem Architecture
 
-Cuando la aplicación arranca, `hal.CurrentBackend` es inyectado gracias a los build tags de Go (`//go:build linux`, `//go:build windows`, `//go:build darwin`). Esto significa que `main.go` y la Interfaz Gráfica (`ui/cli.go`) nunca necesitan saber en qué sistema operativo están corriendo.
+### 1. Hardware Abstraction Layer (`wattwarden-core`)
+Defines the unified hardware interfaces and capabilities:
+- **`PowerSource`**: Battery capacity, discharge wattage, AC connection status, and stationary mains fallback.
+- **`CpuGovernor`**: Number of CPUs, online core scaling, frequency limits, turbo boost, and Energy Performance Preference (EPP).
+- **`RaplController`**: Intel/AMD Running Average Power Limit (PL1 long-term and PL2 short-term package wattage).
+- **`GpuController`**: Integrated and discrete GPU frequency ceilings across Intel, AMD, and NVIDIA.
+- **`DisplayManager`**: Backlight brightness governance for internal panels and external monitors.
+- **`ChargeThreshold`**: Battery charge ceiling control across ASUS, Lenovo ThinkPad, Huawei, and standard ACPI interfaces.
+- **`CompositorFocus`**: Active window class resolution across Wayland (Hyprland, Sway) and X11 compositors.
+- **`PeripheralsController`**: Keyboard backlight, Bluetooth radio, and Wi-Fi state via `rfkill`.
+- **`SystemTweaksController`**: Kernel energy optimizations (Wi-Fi power save, audio power save, USB autosuspend, NMI watchdog, VM writeback).
 
-#### Robust Battery & Power Resolution (Linux)
-In standard Linux systems, hardware directories can change across vendors. To handle this dynamically without hardcoded assumptions, the Linux backend implements:
-* **Dynamic Battery Directory Lookup**: Scans for standard directories (`BAT0`, `BAT1`, `BAT2`, `BATT`) using file statistics, and falls back to listing all `/sys/class/power_supply/*` interfaces and checking if their `type` file contains `"Battery"`.
-* **Multi-Format Power Metric Resolution**:
-  1. Tries reading the standard `power_now` (microwatts) file.
-  2. If missing, falls back to `current_now` (microamperes) * `voltage_now` (microvolts) computation.
-  3. **uevent Parsing Fallback**: If separate files are missing or restricted, parses the unified `/sys/class/power_supply/BAT*/uevent` file for properties (`POWER_SUPPLY_POWER_NOW`, `POWER_SUPPLY_CURRENT_NOW`, `POWER_SUPPLY_VOLTAGE_NOW`).
-  4. **Absolute Value Normalization**: Applies absolute value conversions (`math.Abs`) to resolve issues where ACPI drivers return negative numbers while discharging.
+### 2. Polymorphic Linux Implementation (`wattwarden-platform-linux`)
+- **Probing Chains**: All hardware interfaces are resolved through non-destructive probe sequences. Missing hardware returns graceful fallbacks instead of causing application failure.
+- **Zero-Polling Netlink Engine**: Awakens instantly on kernel power uevents (`NETLINK_KOBJECT_UEVENT`), dropping background CPU consumption to 0.00% while idle.
+- **Direct IPC**: Communicates directly with Hyprland and window manager UNIX domain sockets without invoking child processes.
 
-### Multi-Architecture & 32-bit Support
-WattWarden compiles to native machine binaries with no external runtime library dependencies. In addition to 64-bit platforms (amd64, arm64), the build system generates static binaries for **32-bit x86 Linux (i386/i686)**, allowing lightweight execution on legacy hardware (e.g. running MX Linux 32-bit).
+### 3. Asynchronous Daemon Engine (`wattwarden-daemon`)
+- Governed by Tokio async tasks:
+  1. Netlink kernel event listener.
+  2. Wayland compositor window focus socket reader.
+  3. Maintenance timer tick (10s interval) for dynamic profile persistence and dynamic auto-brightness adjustments.
 
-The automated `install.sh` script queries `uname -m` and dynamically maps old architectures like `i386`/`i686` to the Go 32-bit target (`386`).
-
-### The User Interface (UI)
-The `ui.Dashboard` struct handles the presentation layer using `tcell`.
-Contruye una lista de `MenuItem` que conecta la interfaz gráfica a los métodos de la interfaz `hal.Backend`. Dependiendo del OS devuelto por `b.GetOS()`, los menús ocultan opciones no soportadas nativamente por el SO anfitrión, garantizando que todos los botones funcionales hagan lo prometido sin generar errores silenciosos.
-
-**Dynamic Layout Engine:**
-The UI dynamically detects terminal sizes on every redraw event:
-- If the terminal is wider than 130 columns, it splits the menu and the graph side-by-side.
-- If narrower, it stacks the graph on top of the menu and calculates visible list items, adding a visual scrollbar.
-
-### Auto Daemon
-La implementación en `hal` posee un proceso en segundo plano (Goroutine) llamado "Auto Extreme Daemon". Cuando está habilitado, monitorea la carga en el CPU (loadavg en Unix/Mac o typeperf en Windows) cada 10 segundos.
-- Si está conectada a la corriente, aplica Máximo Rendimiento.
-- Si está con batería, calcula un factor normalizado matemático (`discretePower`), y ajusta los límites de hardware (brillo de pantalla, frecuencias, limits de acelerador) proporcionalmente a la carga de procesamiento, logrando un ahorro de batería ultra fino sin congelar la PC durante picos de trabajo.
+### 4. Zero-GC Terminal Interface (`wattwarden-tui`)
+- Implemented with `ratatui` and `crossterm`.
+- Adapts menu items dynamically according to detected `HardwareCapabilities`. On a desktop with no battery, battery widgets seamlessly transition to "AC Stationary Mode".

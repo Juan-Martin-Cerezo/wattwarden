@@ -1,0 +1,261 @@
+use crate::error::Result;
+
+/// Battery and power telemetry provider
+pub trait PowerSource: Send + Sync {
+    /// Current battery capacity percentage [0, 100]
+    fn battery_percentage(&self) -> Result<u8>;
+
+    /// Returns true if connected to AC power
+    fn is_charging(&self) -> Result<bool>;
+
+    /// Instantaneous power discharge rate in Watts
+    fn consumption_watts(&self) -> Result<f64>;
+
+    /// Formatted time remaining estimate (e.g. "4h 32m" or "Charging")
+    fn time_remaining(&self) -> Result<String>;
+
+    /// Returns true if the system operates purely on AC mains power without a battery (e.g. Desktop PC, Server)
+    fn is_stationary(&self) -> bool {
+        false
+    }
+}
+
+/// Dynamic capabilities discovered at runtime on the host hardware
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HardwareCapabilities {
+    pub has_battery: bool,
+    pub is_stationary_mains: bool,
+    pub has_cpu_frequency_control: bool,
+    pub has_cpu_core_control: bool,
+    pub has_rapl: bool,
+    pub has_gpu_control: bool,
+    pub has_backlight_control: bool,
+    pub has_charge_threshold: bool,
+    pub has_peripherals_control: bool,
+    pub has_system_tweaks: bool,
+    pub has_compositor_focus: bool,
+}
+
+/// CPU cores, frequency limits, and energy governors
+pub trait CpuGovernor: Send + Sync {
+    /// Total number of physical/logical CPUs
+    fn num_cpus(&self) -> usize;
+
+    /// Number of currently online active cores
+    fn online_cores(&self) -> Result<usize>;
+
+    /// Set the number of online active cores (CPU0 always stays online)
+    fn set_online_cores(&self, count: usize) -> Result<()>;
+
+    /// Minimum and maximum hardware frequency bounds in MHz
+    fn freq_bounds(&self) -> Result<(u32, u32)>;
+
+    /// `(min, max)` MHz of the **immutable** hardware frequency range, or `None`
+    /// when the platform cannot discover one.
+    ///
+    /// Only nodes this program never writes may define it: discovering the range
+    /// from mutable state (the very limits [`CpuGovernor::set_freq_limit`] writes)
+    /// makes it inflate on every pass — the "ratchet". `None` means
+    /// "undiscoverable" and callers must then **not write** a frequency at all.
+    /// Platforms with no frequency control (macOS, Windows) have no range and keep
+    /// this default.
+    fn discovered_freq_bounds(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Current frequency scaling limit in MHz
+    fn freq_limit(&self) -> Result<u32>;
+
+    /// Set maximum frequency scaling limit in MHz
+    fn set_freq_limit(&self, mhz: u32) -> Result<()>;
+
+    /// Query whether Turbo Boost is enabled
+    fn turbo_enabled(&self) -> Result<bool>;
+
+    /// Enable or disable Turbo Boost
+    fn set_turbo_enabled(&self, enabled: bool) -> Result<()>;
+
+    /// Energy Performance Preference (EPP)
+    fn energy_performance_preference(&self) -> Result<String>;
+
+    /// Set Energy Performance Preference (e.g. "performance", "balance_performance", "power")
+    fn set_energy_performance_preference(&self, pref: &str) -> Result<()>;
+}
+
+/// Intel/AMD RAPL (Running Average Power Limit) package controls
+pub trait RaplController: Send + Sync {
+    /// Long-term (PL1) and Short-term (PL2) power limit bounds in Watts
+    fn rapl_bounds(&self) -> Result<(u32, u32)>;
+
+    /// Discovered `(min, max)` Watts of the PL1 (`long_term`) constraint, or `None`
+    /// when the firmware exposes no range for it.
+    ///
+    /// `None` forbids writing PL1: no absolute fallback (the legacy `5..115 W`) may
+    /// ever be invented for a write.
+    fn pl1_bounds_watts(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Discovered `(min, max)` Watts of the PL2 (`short_term`) constraint, or `None`
+    /// when the firmware exposes no range for it. `None` forbids writing PL2.
+    fn pl2_bounds_watts(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Get PL1 long term power limit in Watts
+    fn pl1_watts(&self) -> Result<u32>;
+
+    /// Set PL1 long term power limit in Watts
+    fn set_pl1_watts(&self, watts: u32) -> Result<()>;
+
+    /// Get PL2 short term power limit in Watts
+    fn pl2_watts(&self) -> Result<u32>;
+
+    /// Set PL2 short term power limit in Watts
+    fn set_pl2_watts(&self, watts: u32) -> Result<()>;
+}
+
+/// Display backlight brightness controller
+pub trait DisplayManager: Send + Sync {
+    /// Current brightness percentage [0, 100]
+    fn brightness_percent(&self) -> Result<u8>;
+
+    /// Set display brightness percentage [1, 100]
+    fn set_brightness_percent(&self, percent: u8) -> Result<()>;
+}
+
+/// Battery Management System (BMS) charge threshold controller
+pub trait ChargeThreshold: Send + Sync {
+    /// Checks if the hardware firmware supports battery charge thresholds
+    fn supports_threshold(&self) -> bool;
+
+    /// Get current stop charge threshold percentage (e.g. 80)
+    fn charge_threshold(&self) -> Result<u8>;
+
+    /// Set stop charge threshold percentage [50, 100]
+    fn set_charge_threshold(&self, threshold: u8) -> Result<()>;
+}
+
+/// Active desktop compositor focus tracker (Hyprland, Wayland, X11)
+pub trait CompositorFocus: Send + Sync {
+    /// Returns the window class of the current active window (e.g. "kitty", "google-chrome")
+    fn active_window_class(&self) -> Option<String>;
+}
+
+/// C-State idle residency telemetry
+#[derive(Debug, Clone, PartialEq)]
+pub struct CStateInfo {
+    pub name: String,
+    pub time_microseconds: u64,
+    pub usage_count: u64,
+}
+
+pub trait CStateTelemetry: Send + Sync {
+    /// Returns idle C-states for a specific CPU core or the package average
+    fn cstates(&self) -> Result<Vec<CStateInfo>>;
+}
+
+/// Integrated/Discrete GPU frequency scaling controller
+pub trait GpuController: Send + Sync {
+    /// Hardware minimum and maximum frequency boundaries in MHz
+    fn gpu_bounds(&self) -> Result<(u32, u32)>;
+
+    /// `(min, max)` MHz of the **immutable** GPU frequency range, or `None` when the
+    /// platform exposes none.
+    ///
+    /// Same rule as [`CpuGovernor::discovered_freq_bounds`]: the nodes
+    /// [`GpuController::set_gpu_freq`] writes must never define the range, and
+    /// `None` forbids any write (the legacy `300..1100 MHz` fallback is for display
+    /// only).
+    fn discovered_gpu_bounds(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Current maximum GPU frequency in MHz
+    fn gpu_freq(&self) -> Result<u32>;
+
+    /// Set maximum GPU frequency in MHz
+    fn set_gpu_freq(&self, mhz: u32) -> Result<()>;
+}
+
+/// PCIe Active State Power Management (ASPM) controller
+pub trait AspmController: Send + Sync {
+    /// Read the currently active ASPM policy (e.g. "powersave", "performance", "default")
+    fn aspm_policy(&self) -> Result<String>;
+
+    /// Set the PCIe ASPM policy
+    fn set_aspm_policy(&self, policy: &str) -> Result<()>;
+}
+
+/// Hardware peripherals controller (keyboard backlight, Bluetooth, Wi-Fi radio)
+pub trait PeripheralsController: Send + Sync {
+    /// Read whether the keyboard backlight is illuminated
+    fn kbd_backlight(&self) -> Result<bool>;
+
+    /// Enable or disable the keyboard backlight
+    fn set_kbd_backlight(&self, enabled: bool) -> Result<()>;
+
+    /// Check if the Bluetooth radio is unblocked/active
+    fn bluetooth_enabled(&self) -> Result<bool>;
+
+    /// Enable or disable Bluetooth via rfkill
+    fn set_bluetooth_enabled(&self, enabled: bool) -> Result<()>;
+
+    /// Check if Wi-Fi radio is unblocked/active
+    fn wifi_enabled(&self) -> Result<bool>;
+
+    /// Enable or disable Wi-Fi radio via rfkill
+    fn set_wifi_enabled(&self, enabled: bool) -> Result<()>;
+}
+
+/// System and kernel energy tweaks (audio power save, autosuspend, watchdog, writeback)
+pub trait SystemTweaksController: Send + Sync {
+    /// Check whether Wi-Fi link power management is enabled
+    fn wifi_power_save(&self) -> Result<bool>;
+
+    /// Enable or disable Wi-Fi link power management
+    fn set_wifi_power_save(&self, enabled: bool) -> Result<()>;
+
+    /// Check whether audio codec power saving is enabled
+    fn audio_power_save(&self) -> Result<bool>;
+
+    /// Enable or disable audio codec power saving
+    fn set_audio_power_save(&self, enabled: bool) -> Result<()>;
+
+    /// Check whether USB/PCI runtime autosuspend is active
+    fn autosuspend(&self) -> Result<bool>;
+
+    /// Enable or disable USB/PCI runtime autosuspend
+    fn set_autosuspend(&self, enabled: bool) -> Result<()>;
+
+    /// Raw `dirty_writeback_centisecs` value (Go `GetVMWriteback`): the unit the
+    /// dashboard displays and adjusts one centisecond at a time, which
+    /// [`SystemTweaksController::vm_writeback_seconds`] cannot express.
+    ///
+    /// Defaults to the second-resolution value scaled up, which is exact on the
+    /// platforms where the setting is a constant (Go returns `500` on macOS and
+    /// Windows). Linux overrides it to read the real proc node.
+    fn vm_writeback_centisecs(&self) -> i64 {
+        self.vm_writeback_seconds().map_or(0, |s| s as i64 * 100)
+    }
+
+    /// Best-effort write of the raw centisecond value (Go `SetVMWriteback`).
+    fn set_vm_writeback_centisecs(&self, centisecs: i64) -> Result<()> {
+        self.set_vm_writeback_seconds((centisecs.max(0) / 100) as u32)
+    }
+
+    /// Check whether kernel NMI Watchdog is enabled
+    fn nmi_watchdog(&self) -> Result<bool>;
+
+    /// Enable or disable kernel NMI Watchdog
+    fn set_nmi_watchdog(&self, enabled: bool) -> Result<()>;
+
+    /// Get dirty VM writeback interval in seconds
+    fn vm_writeback_seconds(&self) -> Result<u32>;
+
+    /// Set dirty VM writeback interval in seconds
+    fn set_vm_writeback_seconds(&self, seconds: u32) -> Result<()>;
+
+    /// Drop filesystem caches from memory (drop_caches = 3)
+    fn process_purge(&self) -> Result<()>;
+}

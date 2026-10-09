@@ -1,4 +1,5 @@
-build/
-wattwarden
-wattwarden.exe
-.agent_rules.md
+/target/
+**/*.rs.bk
+*.log
+*.pid
+.DS_Store
