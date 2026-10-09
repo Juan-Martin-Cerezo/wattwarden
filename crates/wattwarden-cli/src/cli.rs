@@ -221,6 +221,11 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
                 return 0;
             }
 
+            "--version" | "-v" | "version" => {
+                let _ = writeln!(out, "WattWarden v{}", env!("CARGO_PKG_VERSION"));
+                return 0;
+            }
+
             "--help" | "-h" | "help" => {
                 print_help(out);
                 return 0;
@@ -373,6 +378,18 @@ mod tests {
         let (code, out) = run_args(&["wattwarden", "--status"], &inactive);
         assert_eq!(code, 0);
         assert_eq!(out, "WattWarden Daemon Status: [INACTIVE]\n");
+    }
+
+    #[test]
+    fn golden_version_flag() {
+        let rt = FakeRuntime::new(false, false, true);
+        let (code, out) = run_args(&["wattwarden", "--version"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, format!("WattWarden v{}\n", env!("CARGO_PKG_VERSION")));
+
+        let (code, out) = run_args(&["wattwarden", "-v"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, format!("WattWarden v{}\n", env!("CARGO_PKG_VERSION")));
     }
 
     #[test]
