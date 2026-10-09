@@ -88,7 +88,8 @@ else
     SRC_BIN="${TARGET_DOWNLOAD}"
   elif command -v cargo >/dev/null 2>&1; then
     echo "⚠️  Precompiled asset not found. Compiling from repository via Cargo..."
-    cargo install --git "https://github.com/${REPO}.git" wattwarden-cli --root "${TMP_DIR}"
+    BRANCH="${BRANCH:-master}"
+    cargo install --git "https://github.com/${REPO}.git" --branch "${BRANCH}" wattwarden-cli --root "${TMP_DIR}"
     SRC_BIN="${TMP_DIR}/bin/${BINARY_NAME}"
   else
     echo "❌ Error: Could not download precompiled binary and 'cargo' toolchain is not installed."
@@ -100,8 +101,12 @@ fi
 # Install binary to target directory
 echo "🚚 Installing binary to ${INSTALL_DIR}/${BINARY_NAME}..."
 $SUDO mkdir -p "${INSTALL_DIR}"
-$SUDO cp -f "${SRC_BIN}" "${INSTALL_DIR}/${BINARY_NAME}"
-$SUDO chmod 755 "${INSTALL_DIR}/${BINARY_NAME}"
+if command -v install >/dev/null 2>&1; then
+  $SUDO install -m 755 "${SRC_BIN}" "${INSTALL_DIR}/${BINARY_NAME}"
+else
+  $SUDO cp -f "${SRC_BIN}" "${INSTALL_DIR}/${BINARY_NAME}"
+  $SUDO chmod 755 "${INSTALL_DIR}/${BINARY_NAME}"
+fi
 
 # Configure system background service on Linux
 if [[ "${SKIP_SERVICE:-0}" != "1" && "${OS_NAME}" == "linux" ]]; then

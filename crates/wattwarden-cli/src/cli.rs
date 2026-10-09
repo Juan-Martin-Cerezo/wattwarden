@@ -131,6 +131,46 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
                 return 0;
             }
 
+            "service" => match args.get(2).map(String::as_str) {
+                Some("install") => {
+                    if !rt.is_root() {
+                        let _ = writeln!(
+                                out,
+                                "Error: Administrator/root privileges are required to install the service."
+                            );
+                        return 1;
+                    }
+                    if let Err(e) = rt.install_service() {
+                        let _ = writeln!(out, "Error installing service: {e}");
+                        return 1;
+                    }
+                    let _ = writeln!(
+                        out,
+                        "✅ WattWarden background service installed and started successfully."
+                    );
+                    return 0;
+                }
+                Some("uninstall") => {
+                    if !rt.is_root() {
+                        let _ = writeln!(
+                                out,
+                                "Error: Administrator/root privileges are required to uninstall the service."
+                            );
+                        return 1;
+                    }
+                    if let Err(e) = rt.uninstall_service() {
+                        let _ = writeln!(out, "Error uninstalling service: {e}");
+                        return 1;
+                    }
+                    let _ = writeln!(out, "✅ WattWarden background service uninstalled.");
+                    return 0;
+                }
+                _ => {
+                    print_help(out);
+                    return 1;
+                }
+            },
+
             "--start" | "start" => {
                 if !rt.is_root() {
                     let _ = writeln!(out, "Error: Administrator/root privileges are required.");
