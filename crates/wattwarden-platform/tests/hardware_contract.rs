@@ -35,7 +35,7 @@ fn read(root: &SysfsRoot, rel: &str) -> String {
 
 /// Laptop Intel sintética: 8 CPUs, RAPL 2..60 W, GPU 300..1100 MHz, backlight 1000, BAT0.
 fn fake_intel_laptop(tag: &str) -> SysfsRoot {
-    let dir = std::env::temp_dir().join(format!("ww_parity_{tag}_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("ww_contract_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let root = SysfsRoot::new(&dir);
 

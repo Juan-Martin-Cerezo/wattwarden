@@ -1,25 +1,13 @@
 //! Powercap / RAPL package power limits (PL1 long-term / PL2 short-term).
 //!
-//! Hardware-agnostic rewrite of the Go transcription. Two rules drive it:
+//! Two rules drive this implementation:
 //!
-//! * **Discovery instead of a hardcoded path.** The Go reference (and the first Rust
-//!   port) assumed `/sys/class/powercap/intel-rapl:0`. That node exists on Intel
-//!   notebooks only: AMD, ARM (Raspberry Pi), servers and containers either name the
-//!   zone differently (`intel-rapl-mmio:0`, `amd-rapl:0`, …) or expose no powercap
-//!   class at all. [`LinuxRapl::discover_domains`] globs
-//!   `/sys/class/powercap/*` and accepts **every** zone that exposes a powercap
-//!   constraint (`constraint_0_name`), whatever the vendor calls it, and supports
-//!   several zones at once (multi-package). No zone at all is a normal condition:
-//!   [`LinuxRapl::with_root`] returns `InterfaceNotFound` and the backend simply runs
-//!   without RAPL.
+//! * **Dynamic discovery instead of a hardcoded path.** Discovers zones dynamically
+//!   across `/sys/class/powercap/*`, supporting arbitrary naming conventions across vendors
+//!   (Intel, AMD, ARM), multi-package servers, and degraded environments without panics.
 //! * **A write is clamped inside the constraint's own discovered range.** Each
-//!   constraint's ceiling is `constraint_N_max_power_uw` and its floor
-//!   `constraint_N_min_power_uw` (defaulting to 0). PL1 and PL2 are different
-//!   constraints with different ranges, never the same number. When
-//!   `constraint_N_max_power_uw` is missing or 0 the constraint is **not written** and
-//!   the reason is logged once per attempt at `debug!` — there is no absolute
-//!   fallback: `5/115 W` is never invented for a write (that is what made WattWarden
-//!   write 115 W on a machine whose real ceiling is 45 W).
+//!   constraint's ceiling is `constraint_N_max_power_uw` and floor is `constraint_N_min_power_uw`.
+//!   When limits cannot be verified dynamically, writes are safely skipped.
 //!
 //! Every path goes through [`SysfsRoot`] so `WATTWARDEN_SYSFS_ROOT` relocates the
 //! whole probe.
@@ -36,7 +24,7 @@ const POWERCAP_BASE: &str = "sys/class/powercap";
 pub const FALLBACK_MIN_WATTS: u32 = 5;
 pub const FALLBACK_MAX_WATTS: u32 = 115;
 
-/// Go `getRAPLPath` iterates `i` from 0 to 4 inclusive.
+/// Scans constraint slots from 0 to 4 inclusive.
 const CONSTRAINT_SLOTS: std::ops::RangeInclusive<usize> = 0..=4;
 
 /// Constraint name for the long-term (PL1) limit.
@@ -93,8 +81,7 @@ impl LinuxRapl {
         &self.domains
     }
 
-    /// Go `getRAPLPath(name)` inside one zone: index of the first `constraint_%d_name`
-    /// equal to `name`.
+    /// Index of the first `constraint_%d_name` equal to `name` inside one zone.
     fn constraint_index_in(&self, domain: &str, name: &str) -> Option<usize> {
         let mut slots = CONSTRAINT_SLOTS;
         slots.find(|i| self.root.read(&format!("{domain}/constraint_{i}_name")) == name)
@@ -187,7 +174,7 @@ impl LinuxRapl {
     /// Range used for display/stepping. Discovery first: the union of the per-constraint
     /// ranges (`constraint_N_{min,max}_power_uw`) across every zone, then the package
     /// `*_power_range_uw`, and only if nothing is discoverable the legacy `5..115 W`
-    /// fallback. **Never** used to pick a written value — writes go through
+    /// fallback. **Never** used to pick a written value — writes pass through
     /// [`LinuxRapl::write_constraint`].
     fn bounds(&self) -> (u32, u32) {
         let mut discovered: Option<(u32, u32)> = None;
@@ -223,8 +210,7 @@ impl LinuxRapl {
     }
 
     fn get_limit(&self, constraint: &str) -> u32 {
-        // Go `getRAPLPath` returning "" makes the getter return 0; the first zone that
-        // exposes the constraint is the one reported.
+        // First zone exposing the constraint is reported; returns 0 if absent.
         self.domains
             .iter()
             .find_map(|domain| {
@@ -348,7 +334,7 @@ mod tests {
     fn bounds_fall_back_to_five_and_hundred_fifteen_for_display_only() {
         let rapl = LinuxRapl::with_root(root("empty")).unwrap();
         assert_eq!(rapl.rapl_bounds().unwrap(), (5, 115));
-        // No usable constraint range at all -> Go returns 0 instead of erroring.
+        // No usable constraint range at all -> returns 0 instead of erroring.
         assert_eq!(rapl.pl1_watts().unwrap(), 0);
         assert_eq!(rapl.pl2_watts().unwrap(), 0);
         // And crucially: without a discovered range, nothing is written.

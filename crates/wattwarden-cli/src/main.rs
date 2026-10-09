@@ -107,9 +107,9 @@ fn stop_background_daemon() {
 }
 
 /// Builds the backend, degrading gracefully instead of aborting the process
-/// (`AGENTS.md`: the app must boot on a desktop/server/Pi/container). If the primary
-/// probe chain cannot initialize, we relocate it to an empty root so every control
-/// reports its `N/A`/fallback value rather than killing the app.
+/// (the app boots seamlessly on desktops, servers, Raspberry Pis, or containers).
+/// If the primary probe chain cannot initialize, we relocate it to an empty root so
+/// every control reports its fallback value rather than killing the app.
 fn build_backend() -> Result<LinuxBackend, String> {
     match LinuxBackend::new() {
         Ok(b) => Ok(b),

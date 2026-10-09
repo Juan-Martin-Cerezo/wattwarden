@@ -141,12 +141,12 @@ pub fn uninstall_service() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The unit text is part of the contract (`PARITY.md` §3): lock it down exactly,
+    /// Verifies the systemd unit template configuration,
     /// including `Restart=always`, `RestartSec=3`, `KillMode=process` and the
     /// `--daemon` argument.
     #[cfg(target_os = "linux")]
     #[test]
-    fn systemd_unit_text_matches_parity_contract() {
+    fn systemd_unit_text_matches_specification() {
         let expected = "[Unit]\n\
 Description=WattWarden Auto Power and Hardware Management Daemon\n\
 After=multi-user.target\n\

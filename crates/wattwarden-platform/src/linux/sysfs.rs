@@ -5,10 +5,8 @@
 //! the `WATTWARDEN_SYSFS_ROOT` environment variable so unit tests can point the whole
 //! backend at a fabricated directory tree built with `std::env::temp_dir()`.
 //!
-//! The Go reference implementation (`hal/backend_linux.go`) uses `readSys()` which
-//! returns `""` when a path is missing or unreadable, and `writeSys()` which ignores
-//! errors. [`SysfsRoot::read`] and [`SysfsRoot::write_best_effort`] reproduce those
-//! semantics exactly so the fallbacks documented in `PARITY.md` §2 keep working.
+//! Reads and writes return trimmed content or empty strings on missing files,
+//! providing infallible graceful degradation for telemetry and hardware probing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,7 +59,7 @@ impl SysfsRoot {
         self.path(rel).exists()
     }
 
-    /// Go `readSys()`: trimmed file content, or `""` when the path is missing.
+    /// Reads trimmed file content, or `""` when the path is missing or unreadable.
     pub fn read(&self, rel: &str) -> String {
         self.read_path(&self.path(rel))
     }
@@ -80,8 +78,7 @@ impl SysfsRoot {
             .map_err(|e| WattWardenError::Io { path: p, source: e })
     }
 
-    /// Go `strconv.Atoi(readSys(..))` with the `err != nil -> fallback` idiom:
-    /// `None` means "missing or unparsable".
+    /// Parses integer value from sysfs path; returns `None` on missing or unparsable file.
     pub fn read_u64(&self, rel: &str) -> Option<u64> {
         self.read(rel).parse::<u64>().ok()
     }
@@ -94,7 +91,7 @@ impl SysfsRoot {
         self.read(rel).parse::<f64>().ok()
     }
 
-    /// Go `writeSys()` but surfacing errors to callers that care.
+    /// Writes content to path, surfacing permissions or I/O errors to callers.
     pub fn write(&self, rel: &str, val: &str) -> Result<()> {
         let p = self.path(rel);
         fs::write(&p, val).map_err(|e| {
@@ -106,7 +103,7 @@ impl SysfsRoot {
         })
     }
 
-    /// Go `writeSys()` exactly: best effort, errors silently swallowed.
+    /// Best-effort write: errors are silently swallowed to avoid crashing loops.
     pub fn write_best_effort(&self, rel: &str, val: &str) {
         let _ = fs::write(self.path(rel), val);
     }
@@ -138,7 +135,7 @@ impl SysfsRoot {
             .collect()
     }
 
-    /// Go `filepath.Glob("<dir>/*<suffix>")` restricted to existing entries.
+    /// Finds directory entries matching the given predicate filter.
     pub fn glob(&self, dir: &str, matches: impl Fn(&str) -> bool) -> Vec<PathBuf> {
         self.names(dir)
             .into_iter()
@@ -301,7 +298,7 @@ mod tests {
         );
         assert_eq!(root.path("/"), PathBuf::from("/tmp/ww-fake-root"));
 
-        // Go readSys semantics: missing files read as empty, no panic.
+        // Missing files read as empty strings without panic.
         assert_eq!(root.read("/sys/nope/nope"), "");
         assert_eq!(root.read_u64("/sys/nope/nope"), None);
     }

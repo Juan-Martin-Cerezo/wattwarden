@@ -1,23 +1,12 @@
-//! Integrated GPU frequency control via the DRM `gt_*` sysfs knobs.
+//! Integrated GPU frequency control via DRM `gt_*` sysfs knobs.
 //!
-//! Hardware-agnostic rewrite of the Go transcription:
-//!
-//! * `getGPUPath()` -> the first DRM card exposing a writable frequency node, in Go's
-//!   preference order (`card1`, then `card0`, then every other `cardN`), probed at the
-//!   card root (`cardN/gt_max_freq_mhz`, the Intel i915/xe layout) and under its
-//!   `device/` link. No frequency node on any card (ARM/v3d, AMD DPM-only, a server
-//!   with no GPU) means "no support": [`LinuxGpu::with_root`] returns
-//!   `InterfaceNotFound` and the backend runs without GPU control. Nothing is ever
-//!   written to a node that does not exist.
-//! * `GetGPUBounds()` -> no card means `(300, 1100)`; otherwise
-//!   min = `gt_RPn_freq_mhz` else `gt_min_freq_mhz`, max = `gt_RP0_freq_mhz` else
-//!   `gt_max_freq_mhz`, each falling back to `300`/`1100` on parse failure. This is
-//!   the **display** path: a written value (`gt_min`/`gt_max`) may appear in it, which
-//!   is fine for a UI fallback but is never allowed to gate a write.
-//! * `GetGPUFreq()` -> 0 when there is no card or the file is unparsable.
-//! * `SetGPUFreq(mhz)` -> no card is a no-op; otherwise clamp to bounds and write
-//!   `gt_min_freq_mhz = min` **first**, then `gt_max_freq_mhz = mhz` (Go warns that
-//!   writing the max below the current min is rejected by the kernel, hence order).
+//! * Card discovery probes DRM cards in preference order (`card1`, then `card0`, then
+//!   every other `cardN`), checking both the card root (`cardN/gt_max_freq_mhz`) and
+//!   `cardN/device/`. If no card exposes frequency scaling, `InterfaceNotFound` is returned.
+//! * `gpu_bounds()` returns `(min, max)` frequency limits, falling back to 300/1100 MHz.
+//! * `gpu_freq()` returns 0 when no card is found or the node is unparsable.
+//! * `set_gpu_freq(mhz)` clamps to discovered bounds and writes `gt_min_freq_mhz = min` first,
+//!   followed by `gt_max_freq_mhz = mhz`.
 
 use crate::linux::sysfs::SysfsRoot;
 use std::path::PathBuf;
@@ -30,7 +19,7 @@ const DRM_BASE: &str = "sys/class/drm";
 /// Writable GPU frequency node probed on every DRM card (Intel i915/xe).
 const GT_MAX_FREQ: &str = "gt_max_freq_mhz";
 
-/// Go fallbacks for `GetGPUBounds`.
+/// Fallback frequency bounds for display.
 pub const FALLBACK_MIN_MHZ: u32 = 300;
 pub const FALLBACK_MAX_MHZ: u32 = 1100;
 
@@ -81,7 +70,7 @@ impl LinuxGpu {
     }
 
     /// Discovers the directory of the first DRM card exposing a writable frequency
-    /// node, in Go's preference order (`card1`, then `card0`, then the remaining
+    /// node, in preference order (`card1`, then `card0`, then the remaining
     /// `cardN` sorted).
     ///
     /// The node is probed at the card root (`cardN/gt_max_freq_mhz`, the Intel layout)
@@ -97,7 +86,7 @@ impl LinuxGpu {
         })
     }
 
-    /// DRM card directory names: Go's `card1`/`card0` first, then every other
+    /// DRM card directory names: `card1`/`card0` first, then every other
     /// `cardN` in sorted order. Connector entries are excluded.
     fn ordered_cards(root: &SysfsRoot) -> Vec<String> {
         let cards: Vec<String> = root
@@ -195,7 +184,7 @@ impl GpuController for LinuxGpu {
     }
 
     fn gpu_freq(&self) -> Result<u32> {
-        // Go: missing card or unparsable value both yield 0.
+        // Missing card or unparsable value both yield 0.
         Ok(self.card_read(GT_MAX_FREQ).unwrap_or(0))
     }
 
@@ -373,7 +362,7 @@ mod tests {
         );
         let gpu = LinuxGpu::with_root(root).unwrap();
         assert_eq!(gpu.discovered_gpu_bounds(), None);
-        assert_eq!(gpu.gpu_bounds().unwrap(), (300, 1100)); // display keeps Go fallbacks
+        assert_eq!(gpu.gpu_bounds().unwrap(), (300, 1100)); // display keeps fallbacks
         gpu.set_gpu_freq(900).unwrap();
         assert_eq!(
             fs::read_to_string(card.join("gt_max_freq_mhz")).unwrap(),

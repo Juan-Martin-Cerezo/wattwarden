@@ -315,9 +315,9 @@ mod tests {
     /// vieja que diga `"profile": "Normal"` explícito sigue aplicándolo
     /// (compatibilidad: el valor escrito gana sobre el default `None`).
     #[test]
-    fn test_go_config_json_round_trip() {
-        let go_json = r#"{"auto_extreme_enabled":true,"auto_brightness":false}"#;
-        let cfg: Config = serde_json::from_str(go_json).unwrap();
+    fn test_minimal_config_json_round_trip() {
+        let json_data = r#"{"auto_extreme_enabled":true,"auto_brightness":false}"#;
+        let cfg: Config = serde_json::from_str(json_data).unwrap();
         assert!(cfg.auto_extreme_enabled);
         assert!(!cfg.auto_brightness);
 

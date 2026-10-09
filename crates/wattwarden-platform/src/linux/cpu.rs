@@ -1,23 +1,15 @@
 //! CPU core / frequency / governor control.
 //!
-//! Faithful transcription of `hal/backend_linux.go` (Go reference implementation):
-//!
-//! * `GetNumCPUs`  -> glob `/sys/devices/system/cpu/cpu[0-9]*`, fallback `runtime.NumCPU()`
-//! * `GetCores`    -> `1 + count(cpuN/online == "1")` (cpu0 assumed online)
-//! * `SetCores`    -> clamp 1..NumCPUs, write `online`, then **re-apply** `SetFreqLimit(GetFreqLimit())`
-//! * `GetCPUFreqBounds` -> the **immutable** `cpuinfo_{min,max}_freq` of every CPU,
-//!   aggregated as `min = min(min_i)` / `max = max(max_i)` /1000, fallback 400/1600.
-//!   The mutable `scaling_*` nodes are only ever *written*: reading them back to
-//!   discover the range is what let the range inflate forever (the ratchet bug).
-//! * `GetFreqLimit` -> `cpu0/cpufreq/scaling_max_freq` /1000
-//! * `SetFreqLimit` -> clamp, write `scaling_min_freq` = min and `scaling_max_freq` = mhz
-//!   on **every** `cpu*/cpufreq`
-//! * `GetTurbo`/`SetTurbo` -> `intel_pstate/no_turbo` ("0" = on), else `cpufreq/boost`
-//!   ("1" = on), else default `true`
-//! * `GetEPP`/`SetEPP` -> `cpu0/cpufreq/energy_performance_preference`; writes **all**
-//!   `cpu*/cpufreq/energy_performance_preference` plus the governor
-//!   (`performance` when pref == "performance", otherwise `powersave`)
-//!   on **all** `cpu*/cpufreq/scaling_governor`
+//! * `num_cpus`  -> discovers `/sys/devices/system/cpu/cpu[0-9]*`, fallback to available parallelism.
+//! * `online_cores`    -> `1 + count(cpuN/online == "1")` (cpu0 assumed online).
+//! * `set_online_cores`    -> clamps 1..num_cpus, writes `online`, then re-applies frequency limits.
+//! * `freq_bounds` -> reads immutable `cpuinfo_{min,max}_freq` across available CPUs,
+//!   aggregated as `min = min(min_i)` / `max = max(max_i)` / 1000, fallback 400/1600.
+//! * `freq_limit` -> reads `cpu0/cpufreq/scaling_max_freq` / 1000.
+//! * `set_freq_limit` -> clamps and writes `scaling_min_freq` and `scaling_max_freq` on all cores.
+//! * `turbo_enabled`/`set_turbo_enabled` -> controls `intel_pstate/no_turbo` ("0" = on), or `cpufreq/boost`.
+//! * `energy_performance_preference`/`set_energy_performance_preference` -> controls
+//!   `energy_performance_preference` plus the underlying `scaling_governor`.
 
 use crate::linux::sysfs::SysfsRoot;
 use tracing::debug;
@@ -35,7 +27,7 @@ const EPP_ORDER: [&str; 5] = [
     "power",
 ];
 
-/// CPU frequency fallback bounds (MHz) — `PARITY.md` §2 / Go `GetCPUFreqBounds`.
+/// CPU frequency fallback bounds (MHz).
 pub const FALLBACK_FREQ_MIN_MHZ: u32 = 400;
 pub const FALLBACK_FREQ_MAX_MHZ: u32 = 1600;
 
@@ -63,9 +55,7 @@ impl LinuxCpuGovernor {
         Self { root, discovered }
     }
 
-    /// Go `filepath.Glob("/sys/devices/system/cpu/cpu[0-9]*")`: when the glob finds
-    /// nothing Go keeps going with `runtime.NumCPU()` and builds `cpuN` paths from
-    /// that count, so mirror it here.
+    /// Discovered CPU core IDs, falling back to available parallelism count when empty.
     fn cpu_ids(&self) -> Vec<u32> {
         if self.discovered.is_empty() {
             (0..self.num_cpus() as u32).collect()
@@ -173,7 +163,7 @@ impl CpuGovernor for LinuxCpuGovernor {
                 .write_best_effort(&format!("{}/online", self.cpu_rel(id)), val);
         }
 
-        // Go re-applies the frequency limit so newly woken cores inherit it.
+        // Re-apply frequency limit so newly online cores inherit it.
         let mhz = self.freq_limit()?;
         if mhz > 0 {
             self.set_freq_limit(mhz)?;
@@ -234,7 +224,7 @@ impl CpuGovernor for LinuxCpuGovernor {
     }
 
     fn freq_limit(&self) -> Result<u32> {
-        // Go: failed parse yields 0.
+        // Failed parse yields 0.
         let v = self
             .root
             .read_i64(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_max_freq"))
@@ -267,7 +257,7 @@ impl CpuGovernor for LinuxCpuGovernor {
         for id in self.cpu_ids() {
             let cpufreq = format!("{}/cpufreq", self.cpu_rel(id));
             if !self.root.exists(&cpufreq) {
-                continue; // Go globs existing `cpu*/cpufreq` dirs only
+                continue; // target existing cpufreq dirs only
             }
             self.root
                 .write_best_effort(&format!("{cpufreq}/scaling_min_freq"), &khz_min.to_string());
@@ -288,7 +278,7 @@ impl CpuGovernor for LinuxCpuGovernor {
             return Ok(self.root.read(&boost) == "1");
         }
 
-        // Go assumes turbo is on when neither interface exists.
+        // Default to active if neither interface is present.
         Ok(true)
     }
 
@@ -694,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_sysfs_uses_go_fallbacks() {
+    fn missing_sysfs_uses_default_fallbacks() {
         let root = empty_root("empty");
         let cpu = LinuxCpuGovernor::with_root(root);
 
@@ -728,7 +718,7 @@ mod tests {
 
     /// A machine whose `cpufreq` nodes exist but which exposes no EPP interface (AMD,
     /// ARM, `acpi-cpufreq`): the setter must neither write nor *create* an EPP node,
-    /// while the governor the hardware does expose still gets the Go-derived value.
+    /// while the governor the hardware does expose still gets set.
     #[test]
     fn epp_absent_is_not_written_nor_created() {
         let root = empty_root("noepp");
@@ -761,7 +751,7 @@ mod tests {
                 "cpu{i}: the absent EPP node must not be created"
             );
         }
-        // The governor the hardware does expose is still set (Go behaviour).
+        // The governor the hardware does expose is still set.
         assert_eq!(
             root.read(&format!("{CPU_BASE}/cpu0/cpufreq/scaling_governor")),
             "performance"

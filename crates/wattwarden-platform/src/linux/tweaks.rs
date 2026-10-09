@@ -1,24 +1,22 @@
 //! Kernel / driver energy tweaks.
 //!
-//! Faithful transcription of `hal/backend_linux.go`:
-//!
-//! * WiFi power save -> `iw dev` to list interfaces, `iw dev X get power_save`
+//! * WiFi power save -> queries `iw dev` to list interfaces and checks `iw dev X get power_save`
 //!   (contains `on`), then the `/sys/module/iwlwifi/parameters/power_save` driver
-//!   parameter (`Y`/`N`) as fallback. `Set` writes the driver parameter first and
-//!   then `iw dev X set power_save on|off` for every interface.
+//!   parameter (`Y`/`N`) as fallback. `Set` writes the driver parameter and
+//!   `iw dev X set power_save on|off` for every interface.
 //! * Audio power save -> `/sys/module/snd_hda_intel/parameters/power_save`
-//!   (`"0"` means off) plus `power_save_controller` (`Y`/`N`). Note Go's getter is
-//!   `readSys(..) != "0"`, so a *missing* module parameter reads as `true`.
-//! * Autosuspend -> globs `/sys/bus/usb/devices/*/power/control` (get) and both USB
-//!   and PCI device globs (set): some device in `auto` means enabled; `set(true)`
+//!   (`"0"` means off) plus `power_save_controller` (`Y`/`N`). A missing module parameter
+//!   reads as `true`.
+//! * Autosuspend -> checks `/sys/bus/usb/devices/*/power/control` (get) and both USB
+//!   and PCI device nodes (set): any device in `auto` means enabled; `set(true)`
 //!   writes `"auto"`, `set(false)` writes `"on"`.
 //! * NMI watchdog -> `/proc/sys/kernel/nmi_watchdog` (`"1"` = on).
 //! * VM writeback -> `/proc/sys/vm/dirty_writeback_centisecs`, clamped `100..=6000`
 //!   centiseconds.
-//! * `ProcessPurge` -> write `"3"` to `/proc/sys/vm/drop_caches`.
+//! * `process_purge` -> writes `"3"` to `/proc/sys/vm/drop_caches`.
 //!
-//! Every write is best effort (Go's `writeSys`), so running unprivileged or on a
-//! machine without those knobs degrades silently instead of aborting.
+//! Every write is best effort, so running unprivileged or on a
+//! machine without these knobs degrades silently instead of aborting.
 
 use crate::linux::cmd;
 use crate::linux::sysfs::SysfsRoot;
@@ -35,7 +33,7 @@ const NMI_WATCHDOG: &str = "proc/sys/kernel/nmi_watchdog";
 const DIRTY_WRITEBACK: &str = "proc/sys/vm/dirty_writeback_centisecs";
 const DROP_CACHES: &str = "proc/sys/vm/drop_caches";
 
-/// Go `SetVMWriteback` bounds (centiseconds).
+/// Bounds for VM writeback dirty centiseconds.
 pub const VM_WRITEBACK_MIN_CENTISECS: u32 = 100;
 pub const VM_WRITEBACK_MAX_CENTISECS: u32 = 6000;
 
@@ -54,7 +52,7 @@ impl LinuxSystemTweaks {
         Self { root }
     }
 
-    /// Go `iw dev | awk '$1=="Interface"{print $2}'` without the shell pipeline.
+    /// Extracts interface names from `iw dev` output.
     fn wifi_interfaces() -> Vec<String> {
         cmd::run_capture("iw", &["dev"])
             .lines()
@@ -107,7 +105,7 @@ impl SystemTweaksController for LinuxSystemTweaks {
                 return Ok(true);
             }
         }
-        // Fallback: Intel driver parameter, literal "Y" like Go.
+        // Fallback: Intel driver parameter, literal "Y".
         Ok(self.root.read(IWLWIFI_POWER_SAVE) == "Y")
     }
 
@@ -122,7 +120,7 @@ impl SystemTweaksController for LinuxSystemTweaks {
     }
 
     fn audio_power_save(&self) -> Result<bool> {
-        // Go: `readSys(..) != "0"` — a missing file therefore reads as enabled.
+        // Missing parameter file reads as enabled.
         Ok(self.root.read(SND_HDA_POWER_SAVE) != "0")
     }
 
@@ -166,8 +164,7 @@ impl SystemTweaksController for LinuxSystemTweaks {
     }
 
     fn vm_writeback_seconds(&self) -> Result<u32> {
-        // Go `GetVMWriteback` returns centiseconds (0 when unparsable); the Rust API
-        // exposes whole seconds, hence the integer division.
+        // Integer division converts centiseconds to seconds.
         let centisecs = self.root.read_i64(DIRTY_WRITEBACK).unwrap_or(0);
         Ok((centisecs.max(0) / 100) as u32)
     }
@@ -180,9 +177,7 @@ impl SystemTweaksController for LinuxSystemTweaks {
         Ok(())
     }
 
-    /// Go `GetVMWriteback` returns the raw centisecond value, which the dashboard
-    /// shows and steps one centisecond at a time; the base trait's second-resolution
-    /// scaling would round those steps away on the one platform that exposes them.
+    /// Returns the raw centisecond value for dashboard display and stepping.
     fn vm_writeback_centisecs(&self) -> i64 {
         self.root.read_i64(DIRTY_WRITEBACK).unwrap_or(0)
     }
@@ -217,11 +212,11 @@ mod tests {
     }
 
     #[test]
-    fn audio_power_save_matches_go_including_missing_file() {
+    fn audio_power_save_evaluates_correctly_including_missing_file() {
         let root = root("audio");
         let tweaks = LinuxSystemTweaks::with_root(root.clone());
 
-        // Missing /sys/module/snd_hda_intel -> "" != "0" -> true (Go behaviour).
+        // Missing /sys/module/snd_hda_intel -> "" != "0" -> true.
         assert!(tweaks.audio_power_save().unwrap());
 
         write(&root, SND_HDA_POWER_SAVE, "0\n");
@@ -287,7 +282,7 @@ mod tests {
         let root = root("kernel");
         let tweaks = LinuxSystemTweaks::with_root(root.clone());
 
-        // Missing files -> Go's "1" comparison fails and Atoi yields 0.
+        // Missing files -> comparison fails and missing reads yield 0.
         assert!(!tweaks.nmi_watchdog().unwrap());
         assert_eq!(tweaks.vm_writeback_seconds().unwrap(), 0);
 
@@ -300,7 +295,7 @@ mod tests {
         assert_eq!(root.read(NMI_WATCHDOG), "0");
         assert!(!tweaks.nmi_watchdog().unwrap());
 
-        // Clamp is applied on the centisecond value Go writes.
+        // Clamp is applied on the centisecond value.
         tweaks.set_vm_writeback_seconds(6).unwrap();
         assert_eq!(root.read(DIRTY_WRITEBACK), "600");
         tweaks.set_vm_writeback_seconds(0).unwrap();

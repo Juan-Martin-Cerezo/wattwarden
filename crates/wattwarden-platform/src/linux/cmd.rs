@@ -1,18 +1,16 @@
-//! Thin wrappers around the handful of external utilities the Go reference
-//! implementation shells out to (`iw`, `rfkill`, `brightnessctl`).
+//! Thin wrappers around external utilities (`iw`, `rfkill`, `brightnessctl`).
 //!
-//! Go used `sh -c`; we invoke the binaries directly. All helpers are best effort:
-//! a missing binary yields `""` / is ignored, exactly like Go's error-ignoring
-//! `runCmd()`.
+//! Binaries are invoked directly without intermediate shells. All helpers are best effort:
+//! a missing binary yields `""` or is ignored gracefully.
 
 use std::process::{Command, Stdio};
 
-/// Go `runCmd("...")`: trimmed stdout, or `""` on any failure.
+/// Executes command and returns trimmed stdout, or `""` on any failure.
 ///
 /// Child stdio is detached from our own stdout/stderr: when this code runs
 /// inside the TUI (alternate screen) or the daemon was spawned from the TUI,
 /// any inherited output (e.g. `brightnessctl`'s `Updated device ...` line)
-/// would corrupt the frame. Go never prints those outputs either.
+/// would corrupt the frame.
 pub(crate) fn run_capture(program: &str, args: &[&str]) -> String {
     match Command::new(program)
         .args(args)
@@ -26,7 +24,7 @@ pub(crate) fn run_capture(program: &str, args: &[&str]) -> String {
     }
 }
 
-/// Fire-and-forget invocation (Go ignores the result of these too).
+/// Fire-and-forget command invocation with silenced output streams.
 pub(crate) fn run_ignored(program: &str, args: &[&str]) {
     let _ = Command::new(program)
         .args(args)

@@ -3,8 +3,7 @@
 //!
 //! Every test builds a synthetic sysfs tree for one of those environments, boots the
 //! real backend against it, runs the real daemon loop body (boot profile + adaptive
-//! ladder + brightness loop) with every opt-in switch ON, and asserts the two
-//! guarantees of `AGENTS.md`:
+//! guarantees:
 //!
 //! 1. the daemon **does not fail** — every call returns, no panic, no `Err` that would
 //!    abort startup;

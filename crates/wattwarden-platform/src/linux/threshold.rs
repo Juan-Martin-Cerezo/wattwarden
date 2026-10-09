@@ -2,9 +2,8 @@ use crate::sysfs::{read_sysfs_u64, write_sysfs_u64, SysfsRoot};
 use std::path::PathBuf;
 use wattwarden_core::{ChargeThreshold, Result, WattWardenError};
 
-/// Battery charge ceiling. The discovery ladder is the Rust-side extension (Go master only
-/// exposes the kbd/wifi knobs through rfkill); the *paths* must still resolve through the
-/// relocated `SysfsRoot` so the whole backend stays testable without touching real `/sys`.
+/// Battery charge ceiling. Paths resolve through the relocated
+/// `SysfsRoot` so the controller stays testable without touching real `/sys`.
 pub struct LinuxChargeThreshold {
     threshold_path: Option<PathBuf>,
     root: SysfsRoot,
@@ -134,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_and_io_go_through_the_relocated_root() {
+    fn discovery_and_io_use_the_relocated_root() {
         let root = fake_root("disc", true);
         let thresh = LinuxChargeThreshold::with_root(root.clone());
         assert!(thresh.supports_threshold());

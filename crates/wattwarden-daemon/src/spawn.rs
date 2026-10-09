@@ -93,14 +93,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn daemon_log_path_defaults_to_system_path() {
-        std::env::remove_var("WATTWARDEN_DAEMON_LOG");
-        assert_eq!(daemon_log_path(), PathBuf::from(DAEMON_LOG_PATH));
-    }
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn daemon_log_path_override_is_honored() {
+    fn daemon_log_path_resolution() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("WATTWARDEN_DAEMON_LOG");
+        assert_eq!(daemon_log_path(), PathBuf::from(DAEMON_LOG_PATH));
+
         std::env::set_var("WATTWARDEN_DAEMON_LOG", "/tmp/ww-test-override.log");
         assert_eq!(
             daemon_log_path(),

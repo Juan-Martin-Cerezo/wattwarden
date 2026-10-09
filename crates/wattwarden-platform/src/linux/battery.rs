@@ -1,20 +1,15 @@
 //! Battery / AC telemetry.
 //!
-//! Faithful transcription of `hal/backend_linux.go`:
-//!
-//! * `getBatteryPath()` -> `BAT0`, `BAT1`, `BAT2`, `BATT`; else any `power_supply`
-//!   whose `type` is exactly `Battery`; else the literal `BAT0` (never fails, cached
-//!   for the lifetime of the object)
-//! * `GetBatteryPercentage()` -> `capacity` (missing/unparsable -> 0)
-//! * `IsCharging()` -> first scan every `power_supply` for `type` in
-//!   {`Mains`, `USB_C`, `USB`} with `online == "1"`; otherwise `status` in
-//!   {`Charging`, `Full`}
-//! * `GetBatteryTime()` -> `Charging`, else the `energy_now`/`power_now` path, else the
-//!   uevent `POWER_SUPPLY_ENERGY_NOW`/`POWER_SUPPLY_POWER_NOW` path, else the
-//!   charge/current/voltage path with `energy = e*(v/1e6)` / `power = |c|*(v/1e6)`,
-//!   formatted `"%dh %02dm"`, else `Calculating...`
-//! * `GetPowerConsumptionWatts()` -> `power_now`/1e6, else `|current_now*voltage_now|`/1e12,
-//!   else uevent, else 0.0
+//! * `discover()` -> scans `BAT0`, `BAT1`, `BAT2`, `BATT`; else any `power_supply`
+//!   whose `type` is exactly `Battery`; fallback to `BAT0`.
+//! * `battery_percentage()` -> reads `capacity` (missing/unparsable -> 0).
+//! * `is_charging()` -> scans every `power_supply` for `type` in
+//!   {`Mains`, `USB_C`, `USB`} with `online == "1"`; otherwise checks if `status` is
+//!   `Charging` or `Full`.
+//! * `time_remaining()` -> returns `Charging`, or evaluates `energy_now`/`power_now`,
+//!   or parses uevent properties, or computes from charge/voltage.
+//! * `consumption_watts()` -> computes consumption in Watts from power_now, current_now * voltage_now,
+//!   or uevent fallback.
 
 use crate::linux::sysfs::SysfsRoot;
 use std::collections::HashMap;
@@ -48,9 +43,9 @@ impl LinuxBattery {
 
     /// Compatibility hook: point the battery (and AC) at explicit paths.
     ///
-    /// The battery path is used verbatim; AC detection still follows the Go scan over
-    /// `/sys/class/power_supply` (the `ac_path` argument is therefore accepted for
-    /// signature compatibility but unused, matching the Go reference).
+    /// The battery path is used verbatim; AC detection scans
+    /// `/sys/class/power_supply` (the `ac_path` argument is accepted for
+    /// signature compatibility).
     pub fn from_paths(battery_path: Option<PathBuf>, _ac_path: Option<PathBuf>) -> Self {
         let root = SysfsRoot::new("/");
         match battery_path {
@@ -71,7 +66,7 @@ impl LinuxBattery {
         }
     }
 
-    /// Go `getBatteryPath()`: standard names, then a `type == "Battery"` scan, then `BAT0`.
+    /// Discovers primary battery path: standard names, then a type == "Battery" scan, then BAT0.
     fn discover(root: &SysfsRoot) -> (String, bool) {
         for name in ["BAT0", "BAT1", "BAT2", "BATT"] {
             let rel = format!("{POWER_SUPPLY_BASE}/{name}");
@@ -94,7 +89,7 @@ impl LinuxBattery {
         format!("{}/{leaf}", self.battery_rel)
     }
 
-    /// Go `parseUevent()`: `KEY=VALUE` lines of `<battery>/uevent`.
+    /// Parses key-value lines from `<battery>/uevent`.
     fn parse_uevent(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         let content = self.root.read(&self.bat("uevent"));
@@ -117,7 +112,7 @@ impl Default for LinuxBattery {
     }
 }
 
-/// Go `fmt.Sprintf("%dh %02dm", h, m)` with `int()` truncation.
+/// Formats duration hours as `%dh %02dm`.
 fn format_hours(hours: f64) -> String {
     let h = hours as i64;
     let m = ((hours - h as f64) * 60.0) as i64;
@@ -259,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn percentage_and_charging_follow_go_rules() {
+    fn percentage_and_charging_evaluation() {
         let root = root("basic");
         fs::write(root.path("sys/class/power_supply/BAT0/capacity"), "75\n").unwrap();
         fs::write(

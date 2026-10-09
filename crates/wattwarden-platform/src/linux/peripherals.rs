@@ -1,17 +1,15 @@
 //! Peripherals: keyboard backlight and radio (Bluetooth / Wi-Fi) kill switches.
 //!
-//! Faithful transcription of `hal/backend_linux.go`:
+//! * `kbd_backlight()` -> globs `/sys/class/leds/*kbd_backlight/brightness`, returns
+//!   `read != "0"`, fallback `false`.
+//! * `set_kbd_backlight(e)` -> globs `/sys/class/leds/*kbd_backlight`, on writes
+//!   `max_brightness`, off writes `"0"`.
+//! * `bluetooth_enabled()` / `wifi_enabled()` -> queries `rfkill list bluetooth|wifi`; off
+//!   only when containing `Soft blocked: yes`.
+//! * `set_bluetooth_enabled()` / `set_wifi_enabled()` -> triggers `rfkill block|unblock <kind>`.
 //!
-//! * `GetKbdBacklight()` -> glob `/sys/class/leds/*kbd_backlight/brightness`, first
-//!   match, `readSys(f) != "0"`; `false` when nothing matches.
-//! * `SetKbdBacklight(e)` -> glob `/sys/class/leds/*kbd_backlight`, on writes
-//!   `max_brightness` verbatim, off writes `"0"`.
-//! * `GetBluetooth()` / `GetWifiEnable()` -> `rfkill list bluetooth|wifi` is *off*
-//!   only when the output contains the literal `Soft blocked: yes`.
-//! * `SetBluetooth()` / `SetWifiEnable()` -> `rfkill block|unblock <kind>`.
-//!
-//! The `rfkill` invocations are best effort: when the binary is missing the command
-//! helper returns `""` and the getters report "not blocked" like Go's `runCmd`.
+//! The `rfkill` invocations are best effort: when the binary is missing, getters
+//! report unblocked by default.
 
 use crate::linux::cmd;
 use crate::linux::sysfs::SysfsRoot;
@@ -45,7 +43,7 @@ impl LinuxPeripherals {
             .collect()
     }
 
-    /// Go semantics: power is off only when `rfkill` explicitly reports a block.
+    /// Device power is off only when `rfkill` explicitly reports a software block.
     fn rfkill_blocked(kind: &str) -> bool {
         cmd::run_capture("rfkill", &["list", kind]).contains("Soft blocked: yes")
     }
@@ -66,7 +64,7 @@ impl PeripheralsController for LinuxPeripherals {
     fn kbd_backlight(&self) -> Result<bool> {
         for led in self.kbd_leds() {
             let brightness = format!("{led}/brightness");
-            // Go globs the `/brightness` file itself: missing file means no match.
+            // Missing brightness file means no match.
             if self.root.exists(&brightness) {
                 return Ok(self.root.read(&brightness) != "0");
             }
@@ -77,7 +75,7 @@ impl PeripheralsController for LinuxPeripherals {
     fn set_kbd_backlight(&self, enabled: bool) -> Result<()> {
         for led in self.kbd_leds() {
             if enabled {
-                // Go writes the raw `max_brightness` content.
+                // Write maximum brightness setting verbatim.
                 let max = self.root.read(&format!("{led}/max_brightness"));
                 self.root
                     .write_best_effort(&format!("{led}/brightness"), &max);

@@ -1480,7 +1480,7 @@ mod tests {
 
     /// Brightness test: terminal (12), empty (12), heavy UI (30), other (20) + deltas
     #[test]
-    fn test_brightness_logic_matches_go_and_level_deltas() {
+    fn test_brightness_logic_and_level_deltas() {
         let root = fake_intel_laptop("test_bl");
         let backend = PlatformBackend::with_root(root.clone()).unwrap();
 
