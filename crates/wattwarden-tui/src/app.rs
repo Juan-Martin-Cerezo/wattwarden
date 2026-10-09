@@ -1,13 +1,13 @@
-// Only Linux (systemd) and Windows (taskkill) shell out from the dashboard; macOS
+// Only Linux (systemd) shells out from the dashboard; macOS
 // drives everything through its backend.
-#[cfg(any(target_os = "linux", not(unix)))]
+#[cfg(target_os = "linux")]
 use std::process::Command;
 use std::time::{Duration, Instant};
 use wattwarden_core::*;
 use wattwarden_daemon::{spawn, PidManager};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 
-/// Go `d.refreshDelay` default and bounds for the graph sampling interval.
+/// Default and bounds for the telemetry graph sampling interval.
 const DEFAULT_REFRESH_DELAY: Duration = Duration::from_millis(2000);
 const MIN_REFRESH_DELAY: Duration = Duration::from_millis(500);
 const MAX_REFRESH_DELAY: Duration = Duration::from_secs(10);
@@ -53,10 +53,7 @@ impl ActionItem {
         matches!(self, ActionItem::Header(_))
     }
 
-    /// Go calls `b.StopDaemon()` before every manual Inc/Dec that writes hardware.
-    /// These are exactly the items whose `Inc`/`Dec` stop the loop (`cli.go:418-503`).
-    /// Brightness is excluded (Go only turns auto-brightness off there) and so are the
-    /// read-only EPP/ASPM rows.
+    /// Manual hardware adjustment pauses the background daemon to prioritize user control.
     fn stops_daemon_on_adjust(&self) -> bool {
         matches!(
             self,
@@ -78,15 +75,13 @@ impl ActionItem {
     }
 }
 
-/// Go `b.IsDaemonRunning() || service.IsDaemonActive()`, restricted to the fork-free
-/// PID-file check so the dashboard never shells out on a redraw.
+/// Checks whether the background daemon is running via fork-free PID-file check.
 fn daemon_is_active() -> bool {
     PidManager::new().is_running()
 }
 
-/// Formats a `std::time::Duration` the way Go's `time.Duration.String()` does for the
-/// values this loop can produce (500ms, 1s, 1.5s ... 10s).
-pub fn go_duration(d: Duration) -> String {
+/// Formats a `std::time::Duration` as human-readable string (500ms, 1s, 1.5s ... 10s).
+pub fn format_duration(d: Duration) -> String {
     let ms = d.as_millis();
     if ms < 1000 {
         return format!("{ms}ms");
@@ -101,12 +96,7 @@ pub fn go_duration(d: Duration) -> String {
     format!("{secs}s")
 }
 
-/// Go `buildMenuItems` (`cli.go:350-585`): the row set and order depend on `GetOS()`.
-///
-/// A runtime `match` on the OS name — not `cfg` — is deliberate: every `ActionItem`
-/// stays *constructed* on every target, so the rows the current OS hides do not trip
-/// `dead_code` under `clippy -D warnings` on the cross targets. An unrecognised OS
-/// gets the profiles section only, exactly like Go's `if/else if` chain.
+/// Builds the menu layout dynamically based on the detected operating system name.
 fn build_menu(os_name: &str) -> Vec<ActionItem> {
     let mut items = vec![
         ActionItem::Header("─── [ PROFILES ] ───────────────────────".into()),
@@ -157,26 +147,6 @@ fn build_menu(os_name: &str) -> Vec<ActionItem> {
                 ActionItem::ProcessPurge,
             ]);
         }
-        "Windows" => {
-            items.push(ActionItem::Header(
-                "─── [ HARDWARE LIMITS ] ────────────────".into(),
-            ));
-            items.push(ActionItem::Turbo);
-            items.push(ActionItem::Header(String::new()));
-            items.push(ActionItem::Header(
-                "─── [ PERIPHERALS & NETWORKING ] ──────".into(),
-            ));
-            items.extend([
-                ActionItem::Brightness,
-                ActionItem::WifiEnable,
-                ActionItem::Bluetooth,
-            ]);
-            items.push(ActionItem::Header(String::new()));
-            items.push(ActionItem::Header(
-                "─── [ SYSTEM MEMORY ] ──────────────────".into(),
-            ));
-            items.push(ActionItem::ProcessPurge);
-        }
         "macOS" => {
             items.push(ActionItem::Header(
                 "─── [ PERIPHERALS & NETWORKING ] ──────".into(),
@@ -209,20 +179,20 @@ pub struct App {
     pub toast: Option<(String, Instant)>,
     pub should_quit: bool,
     pub last_update: Instant,
-    /// Graph sampling interval, adjustable with `+`/`-` (Go `refreshDelay`).
+    /// Graph sampling interval, adjustable with `+`/`-`.
     pub refresh_delay: Duration,
     /// Real daemon state, refreshed with a short TTL so the "Auto Extreme Mode" row
-    /// reflects `IsDaemonActive()` rather than `config.profile`.
+    /// reflects whether the daemon is actively running rather than `config.profile`.
     daemon_active: bool,
     daemon_checked: Instant,
 }
 
 impl App {
     pub fn new(backend: LinuxBackend, config: Config) -> Self {
-        // Go `buildMenuItems` selects the row set from `GetOS()` (`cli.go:350-585`).
+        // Select the row set based on the host OS.
         let items = build_menu(backend.os_name());
 
-        // Go `d.selected = 1` (first non-header entry, skipping the PROFILES title).
+        // Select the first non-header entry, skipping the PROFILES title.
         let initial_selected = items.iter().position(|i| !i.is_header()).unwrap_or(0);
 
         Self {
@@ -267,26 +237,15 @@ impl App {
         self.daemon_checked = Instant::now();
     }
 
-    /// Go `b.StopDaemon()` (`backend_linux.go:743-751`): closes the in-process
-    /// loop, unconditionally and without touching any config or service. Every
-    /// manual `Inc`/`Dec` pairs this with the ticking-loop stop, and the modal
-    /// confirm plus the `r` hotkey call the full `StopBackgroundDaemon`.
+    /// Stops the running daemon process, unconditionally without altering persisted configuration.
+    /// Every manual parameter adjustment pairs with stopping the automated daemon loop.
     pub fn stop_daemon(&mut self) {
         let pid = PidManager::new();
         if let Some(p) = pid.read_pid() {
-            #[cfg(unix)]
-            {
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(p),
-                    nix::sys::signal::Signal::SIGTERM,
-                );
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/PID", &p.to_string()])
-                    .status();
-            }
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(p),
+                nix::sys::signal::Signal::SIGTERM,
+            );
         }
         pid.release();
 
@@ -294,11 +253,8 @@ impl App {
         self.daemon_checked = Instant::now();
     }
 
-    /// Go `service.StopBackgroundDaemon` (`service.go:186-210`): persist
-    /// `auto_extreme_enabled = false`, stop the loop, stop the systemd unit,
-    /// SIGTERM the detached PID and delete the PID file. Used by the modal
-    /// confirm, the `r` hotkey, and the AutoExtreme toggle-off — exactly the
-    /// callers Go pairs with `StopBackgroundDaemon` (`cli.go:365, 614, 647`).
+    /// Stops the background daemon: sets `auto_extreme_enabled = false`, stops the
+    /// running process, stops the systemd unit, and releases the PID lock.
     pub fn stop_background_daemon(&mut self) {
         self.config.auto_extreme_enabled = false;
         let _ = self.config.save(None);
@@ -314,8 +270,8 @@ impl App {
         self.daemon_checked = Instant::now();
     }
 
-    /// Go `service.StartBackgroundDaemon`: persist the flag, restart the unit if it
-    /// exists, otherwise spawn a detached daemon.
+    /// Starts the background daemon: persists `auto_extreme_enabled = true`, restarts
+    /// the systemd unit if present, or spawns a detached daemon process.
     pub fn start_daemon(&mut self) {
         self.config.auto_extreme_enabled = true;
         let _ = self.config.save(None);
@@ -331,9 +287,7 @@ impl App {
 
         self.daemon_active = daemon_is_active();
         if !self.daemon_active {
-            // Go `SpawnDetachedDaemon` (`spawn_unix.go`): the child inherits
-            // nothing from the TUI's alternate screen — stdin is detached and
-            // stdout/stderr go to /var/log/wattwarden.log.
+            // Detached daemon: the child process runs detached with standard streams redirected.
             if spawn::spawn_detached_daemon().is_ok() {
                 self.daemon_active = true;
             }
@@ -357,19 +311,25 @@ impl App {
         }
     }
 
-    /// Go `+`: speed the graph up (min 500ms), toast the new interval.
+    /// Increases graph sampling rate (minimum 500ms), toast the new interval.
     pub fn speed_up(&mut self) {
         if self.refresh_delay > MIN_REFRESH_DELAY {
             self.refresh_delay = (self.refresh_delay - REFRESH_STEP).max(MIN_REFRESH_DELAY);
-            self.set_toast(format!("Update Speed: {}", go_duration(self.refresh_delay)));
+            self.set_toast(format!(
+                "Update Speed: {}",
+                format_duration(self.refresh_delay)
+            ));
         }
     }
 
-    /// Go `-`: slow the graph down (max 10s), toast the new interval.
+    /// Decreases graph sampling rate (maximum 10s), toast the new interval.
     pub fn speed_down(&mut self) {
         if self.refresh_delay < MAX_REFRESH_DELAY {
             self.refresh_delay = (self.refresh_delay + REFRESH_STEP).min(MAX_REFRESH_DELAY);
-            self.set_toast(format!("Update Speed: {}", go_duration(self.refresh_delay)));
+            self.set_toast(format!(
+                "Update Speed: {}",
+                format_duration(self.refresh_delay)
+            ));
         }
     }
 
@@ -397,7 +357,7 @@ impl App {
 
     pub fn confirm_extreme_mode(&mut self) {
         self.confirm_extreme = false;
-        // Go modal confirm (`cli.go:614-617`): full `StopBackgroundDaemon`.
+        // Confirming Extreme mode stops the background daemon before applying profile.
         self.stop_background_daemon();
         let _ = self.backend.apply_profile(&PowerProfile::Extreme);
         self.config.profile = Some(PowerProfile::Extreme);
@@ -409,12 +369,10 @@ impl App {
         self.confirm_extreme = false;
     }
 
-    /// Go's `r`/`R`/Ctrl-R hotkey uses the "System Restored" toast while the menu's
-    /// Restore entry says "RESTORE MODE ACTIVATED" — both run the same restore.
+    /// Restores the default system power profile.
     pub fn restore(&mut self, message: &str) {
         self.confirm_extreme = false;
-        // Go `r` hotkey (`cli.go:646-650`) and menu Restore (`cli.go:410`):
-        // full `StopBackgroundDaemon`, then the restore writes.
+        // Stop background daemon prior to reverting hardware limits.
         self.stop_background_daemon();
         let _ = self.backend.apply_profile(&PowerProfile::Normal);
         self.config.profile = Some(PowerProfile::Normal);
@@ -426,7 +384,7 @@ impl App {
         let item = self.items[self.selected].clone();
         match item {
             ActionItem::ProfilePerformance => {
-                // Go (`cli.go:356`): `StopBackgroundDaemon` before the writes.
+                // Stop background daemon prior to applying performance settings.
                 self.stop_background_daemon();
                 let _ = self.backend.apply_profile(&PowerProfile::Performance);
                 self.config.profile = Some(PowerProfile::Performance);
@@ -439,13 +397,11 @@ impl App {
             ActionItem::ProfileAutoExtreme => {
                 self.refresh_daemon_state();
                 if self.daemon_active {
-                    // Go toggle-off (`cli.go:364-366`): `StopBackgroundDaemon`,
-                    // no hardware write at all.
+                    // Stop background daemon without altering current hardware limits.
                     self.stop_background_daemon();
                     self.set_toast("AUTO EXTREME DAEMON STOPPED");
                 } else {
-                    // Go toggle-on (`cli.go:368-369`): only
-                    // `StartBackgroundDaemon`, no `apply_profile` call.
+                    // Start daemon loop in the background.
                     self.start_daemon();
                     self.set_toast("AUTO EXTREME RUNNING (BACKGROUND)");
                 }
@@ -469,12 +425,12 @@ impl App {
                 let _ = self.backend.tweaks.process_purge();
                 self.set_toast("PROCESSES PURGED");
             }
-            // Go defines no `Action` for the remaining rows, so Enter does nothing.
+            // Non-actionable rows ignore Enter.
             _ => {}
         }
     }
 
-    /// Reads the raw centisecond value Go displays as "VM Writeback (s)".
+    /// Reads the raw centisecond value displayed as "VM Writeback (s)".
     fn vm_writeback_centisecs(&self) -> i64 {
         self.backend.tweaks.vm_writeback_centisecs()
     }
@@ -652,7 +608,7 @@ impl App {
                 self.write_vm_writeback_centisecs(cur - 1);
                 self.set_toast(format!("VM WRITEBACK: {}", self.vm_writeback_centisecs()));
             }
-            // EPP / ASPM are read-only in Go (no Inc/Dec/Action): never write hardware here.
+            // EPP and ASPM are read-only in the dashboard: never write hardware here.
             _ => {}
         }
     }
@@ -760,17 +716,17 @@ mod tests {
     }
 
     #[test]
-    fn go_duration_matches_go_string_format() {
-        assert_eq!(go_duration(Duration::from_millis(500)), "500ms");
-        assert_eq!(go_duration(Duration::from_secs(1)), "1s");
-        assert_eq!(go_duration(Duration::from_millis(1500)), "1.5s");
-        assert_eq!(go_duration(Duration::from_secs(2)), "2s");
-        assert_eq!(go_duration(Duration::from_secs(10)), "10s");
+    fn format_duration_matches_expected_string_format() {
+        assert_eq!(format_duration(Duration::from_millis(500)), "500ms");
+        assert_eq!(format_duration(Duration::from_secs(1)), "1s");
+        assert_eq!(format_duration(Duration::from_millis(1500)), "1.5s");
+        assert_eq!(format_duration(Duration::from_secs(2)), "2s");
+        assert_eq!(format_duration(Duration::from_secs(10)), "10s");
     }
 
     #[test]
-    fn only_go_adjusted_items_stop_the_daemon() {
-        // The 14 rows Go pairs with `b.StopDaemon()`.
+    fn hardware_adjustments_stop_the_daemon() {
+        // All hardware control rows pair with stopping the daemon.
         for item in [
             ActionItem::Cores,
             ActionItem::FreqLimit,
@@ -808,10 +764,9 @@ mod tests {
         }
     }
 
-    /// Go `buildMenuItems` (`cli.go:350-585`): the dashboard shows a different row set
-    /// per `GetOS()`, with the exact section headers. Locked down per OS.
+    /// The dashboard shows a consistent row set per OS with the exact section headers.
     #[test]
-    fn golden_menu_matches_go_per_os() {
+    fn golden_menu_matches_per_os() {
         use ActionItem::*;
 
         let h_profiles = Header("─── [ PROFILES ] ───────────────────────".into());
@@ -822,8 +777,7 @@ mod tests {
         let h_mem = Header("─── [ SYSTEM MEMORY ] ──────────────────".into());
         let blank = Header(String::new());
 
-        // The PROFILES block is shared by every OS (AutoExtremeLevel is the documented
-        // Rust-only extension from PARITY.md §4).
+        // The PROFILES block is shared by every OS.
         let profiles = vec![
             h_profiles,
             ProfilePerformance,
@@ -837,7 +791,7 @@ mod tests {
 
         let mut linux = profiles.clone();
         linux.extend([
-            h_hw.clone(),
+            h_hw,
             Cores,
             FreqLimit,
             GpuFreq,
@@ -863,21 +817,6 @@ mod tests {
         ]);
         assert_eq!(build_menu("Linux"), linux);
 
-        let mut windows = profiles.clone();
-        windows.extend([
-            h_hw,
-            Turbo,
-            blank.clone(),
-            h_per_net.clone(),
-            Brightness,
-            WifiEnable,
-            Bluetooth,
-            blank.clone(),
-            h_mem.clone(),
-            ProcessPurge,
-        ]);
-        assert_eq!(build_menu("Windows"), windows);
-
         let mut macos = profiles.clone();
         macos.extend([
             h_per_net,
@@ -890,7 +829,7 @@ mod tests {
         ]);
         assert_eq!(build_menu("macOS"), macos);
 
-        // Go's `if/else if` adds no platform section for an unrecognised OS name.
+        // An unrecognised OS name adds no platform section.
         assert_eq!(build_menu("FreeBSD"), profiles);
     }
 }

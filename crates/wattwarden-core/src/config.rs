@@ -184,15 +184,7 @@ fn default_gui_brightness() -> u8 {
 
 impl Config {
     pub fn default_path() -> PathBuf {
-        if cfg!(windows) {
-            let program_data =
-                std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
-            PathBuf::from(program_data)
-                .join("wattwarden")
-                .join("config.json")
-        } else {
-            PathBuf::from("/etc/wattwarden/config.json")
-        }
+        PathBuf::from("/etc/wattwarden/config.json")
     }
 
     pub fn load_or_default(path: Option<&Path>) -> Self {

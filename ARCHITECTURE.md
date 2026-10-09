@@ -1,12 +1,12 @@
 # System Architecture ⚙️
-> **WattWarden Architecture Specification (Rust Edition)**
+> **WattWarden Architecture Specification**
 
 WattWarden is designed around the principles of **Universal Silicon Polymorphism**, zero-overhead asynchronous event handling, and strict decoupling between hardware drivers and presentation layers.
 
 ---
 
 ## 🏛️ Foundational Principles
-Read [`PHILOSOPHY.md`](PHILOSOPHY.md) for the complete 5 Cardinal Axioms governing hardware abstraction and graceful degradation. All AI-driven refactoring must follow [`AGENTS.md`](AGENTS.md).
+Read [`PHILOSOPHY.md`](PHILOSOPHY.md) for the complete 6 Cardinal Axioms governing hardware abstraction and graceful degradation. All contributions must adhere to [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -17,12 +17,11 @@ wattwarden/
 ├── Cargo.toml                      # Workspace root & shared dependency definitions
 ├── crates/
 │   ├── wattwarden-core/            # Hardware abstraction traits, typestates, capabilities, config
-│   ├── wattwarden-platform-linux/  # Kernel Netlink, sysfs, RAPL, DRM, and Wayland IPC
-│   ├── wattwarden-daemon/          # Asynchronous Tokio event loop & systemd service controller
+│   ├── wattwarden-platform/        # Cross-platform hardware backends (Linux sysfs/Netlink, macOS)
+│   ├── wattwarden-daemon/          # Asynchronous Tokio event loop & background service controller
 │   ├── wattwarden-tui/             # High-performance Ratatui terminal dashboard
-│   └── wattwarden-cli/             # Unified binary CLI dispatcher (clap v4)
+│   └── wattwarden-cli/             # Unified binary CLI dispatcher
 ├── PHILOSOPHY.md                   # Core philosophy & graceful degradation doctrine
-├── AGENTS.md                       # AI agent guidelines & coding constraints
 └── CONTRIBUTING.md                 # Development & contribution standards
 ```
 
@@ -42,8 +41,8 @@ Defines the unified hardware interfaces and capabilities:
 - **`PeripheralsController`**: Keyboard backlight, Bluetooth radio, and Wi-Fi state via `rfkill`.
 - **`SystemTweaksController`**: Kernel energy optimizations (Wi-Fi power save, audio power save, USB autosuspend, NMI watchdog, VM writeback).
 
-### 2. Polymorphic Linux Implementation (`wattwarden-platform-linux`)
-- **Probing Chains**: All hardware interfaces are resolved through non-destructive probe sequences. Missing hardware returns graceful fallbacks instead of causing application failure.
+### 2. Polymorphic Platform Implementation (`wattwarden-platform`)
+- **Probing Chains**: All hardware interfaces across Linux and macOS are resolved through non-destructive probe sequences. Missing hardware returns graceful fallbacks instead of causing application failure.
 - **Zero-Polling Netlink Engine**: Awakens instantly on kernel power uevents (`NETLINK_KOBJECT_UEVENT`), dropping background CPU consumption to 0.00% while idle.
 - **Direct IPC**: Communicates directly with Hyprland and window manager UNIX domain sockets without invoking child processes.
 

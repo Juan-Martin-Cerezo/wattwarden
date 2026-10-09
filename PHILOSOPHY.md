@@ -7,7 +7,7 @@ WattWarden is engineered under a singular architectural mandate: **Universal Sil
 
 ## 📜 The 6 Cardinal Axioms
 
-Every contributor—whether a human software engineer or an autonomous AI coding agent—must preserve these six non-negotiable axioms:
+Every contributor must preserve these six non-negotiable axioms:
 
 ### 1. Probe First, Bind Later (Dynamic Discovery)
 The system must never assume the existence of any sysfs node, driver attribute, device file, or IPC socket. Hardware components are discovered through non-destructive, prioritized discovery probes at runtime. If a vendor path does not exist, the probe returns `None` and allows lower-priority fallback probes to evaluate.
@@ -43,7 +43,7 @@ Hardware topology is mutable at runtime. Display cables are detached, external p
 
 ---
 
-## 🛡️ Maintainer & AI Agent Directives
+## 🛡️ Contributor Directives
 
 When modifying or expanding the WattWarden codebase:
 1. **Never use `?` on primary component discovery in startup routines.** Missing hardware is a normal operating condition, not an error.

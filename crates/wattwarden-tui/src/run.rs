@@ -17,9 +17,7 @@ use wattwarden_core::*;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Set from the SIGINT/SIGTERM/SIGHUP handler so the loop can unwind and restore the
-/// terminal instead of leaving it in raw mode. Windows has no asynchronous signal for
-/// this — Ctrl-C arrives there as a key event, which `run_loop` already handles — so
-/// the flag and its handler only exist on Unix.
+/// terminal instead of leaving it in raw mode.
 #[cfg(unix)]
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -109,7 +107,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                 app.should_quit = true;
             }
-            // Go hotkey `r`/`R`/Ctrl-R: restore + "System Restored" toast.
+            // Hotkey 'r'/'R': restore + "System Restored" toast.
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 app.restore("System Restored");
             }
@@ -119,9 +117,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             KeyCode::Char('-') => {
                 app.speed_down();
             }
-            // Go accepts both cases for its `w`/`s`/`a`/`d` movement keys
-            // (`cli.go:651-679`); the vim `k`/`j`/`h`/`l` bindings are a Rust-only
-            // addition.
+            // Navigation: arrow keys, WASD, and vim keys (hjkl).
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') | KeyCode::Char('W') => {
                 app.prev_menu();
             }

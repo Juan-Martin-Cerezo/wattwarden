@@ -1,19 +1,16 @@
-//! Direct execution of the external utilities the Go macOS/Windows backends call
-//! (`pmset`, `ioreg`, `networksetup`, `defaults`, `blueutil`, `powercfg`,
-//! `powershell`, `netsh`, `typeperf`, `purge`).
+//! Direct execution of the external utilities the macOS backend calls
+//! (`pmset`, `ioreg`, `networksetup`, `defaults`, `blueutil`, `purge`).
 //!
-//! Binaries are invoked directly — never through `sh -c` (AGENTS.md) — and every
-//! failure is ignored exactly like Go's `runCmd`/`runMacCmd`/`runWinCmd`: an empty
+//! Binaries are invoked directly and every failure is ignored: an empty
 //! string for a read, a no-op for a write. The child's stdio is detached so a
-//! helper's output (e.g. `brightnessctl`'s "Updated device …") can never corrupt a
-//! TUI frame; Go never printed those either.
+//! helper's output can never corrupt a TUI frame.
 //!
 //! This module is compiled on every host on purpose: it is the seam that lets the
-//! macOS/Windows backend tests point `PATH` at fake binaries and run here on Linux.
+//! macOS backend tests point `PATH` at fake binaries and run on Linux.
 
 use std::process::{Command, Stdio};
 
-/// Go `runMacCmd`/`runWinCmd`: trimmed stdout, or `""` on any failure.
+/// Captured command execution: trimmed stdout, or `""` on any failure.
 pub fn run_capture(program: &str, args: &[&str]) -> String {
     match Command::new(program)
         .args(args)
@@ -27,7 +24,7 @@ pub fn run_capture(program: &str, args: &[&str]) -> String {
     }
 }
 
-/// Fire-and-forget invocation; Go ignores the result of these too.
+/// Fire-and-forget invocation; ignores errors.
 pub fn run_ignored(program: &str, args: &[&str]) {
     let _ = Command::new(program)
         .args(args)
@@ -37,9 +34,8 @@ pub fn run_ignored(program: &str, args: &[&str]) {
         .status();
 }
 
-/// Serializes the `PATH`/env mutation of the platform mock tests. Only defined where
-/// one of those tests exists: macOS (`cfg(unix)`) and the Windows mock (`cfg(not(windows))`).
-#[cfg(all(test, any(unix, not(target_os = "windows"))))]
+/// Serializes the `PATH`/env mutation of the platform mock tests.
+#[cfg(test)]
 pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::Mutex;
     static LOCK: Mutex<()> = Mutex::new(());

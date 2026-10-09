@@ -1,14 +1,12 @@
-//! macOS backend — the Go reference (`hal/backend_darwin.go`) ported function by
-//! function. See `PARITY.md` §6 for the Go → Rust table and what is deliberately
-//! left unsupported.
+//! macOS hardware abstraction layer.
 //!
 //! This module is compiled on **every** host, not just `target_os = "macos"`: the
 //! backend only ever shells out to `pmset`/`ioreg`/`networksetup`/… (no macOS-only
-//! API), so its Go-parity test runs against fake binaries on `PATH` from Linux too.
-//! `lib.rs` still only re-exports it as `PlatformBackend` on macOS.
+//! API), so its integration tests can execute against mocked command runners on Linux hosts too.
+//! `lib.rs` re-exports it as `PlatformBackend` on macOS.
 //!
-//! No hardware is required to boot: every read falls back to the Go default and
-//! every write is a no-op when the command is missing (AGENTS.md).
+//! No physical hardware is required to initialise: missing commands and reads fall back
+//! gracefully to safe defaults.
 
 use crate::exec;
 use crate::parse;
@@ -17,34 +15,32 @@ use wattwarden_core::*;
 pub struct MacOsBattery;
 
 impl PowerSource for MacOsBattery {
-    /// Go `GetBatteryPercentage`.
+    /// Reads battery percentage via `pmset -g batt`.
     fn battery_percentage(&self) -> Result<u8> {
         let out = exec::run_capture("pmset", &["-g", "batt"]);
         Ok(parse::mac_battery_percent(&out))
     }
 
-    /// Go `IsCharging`.
+    /// Checks charging status via `pmset -g batt`.
     fn is_charging(&self) -> Result<bool> {
         let out = exec::run_capture("pmset", &["-g", "batt"]);
         Ok(parse::mac_is_charging(&out))
     }
 
-    /// Go `GetPowerConsumptionWatts`.
+    /// Measures current power consumption in Watts via `ioreg`.
     fn consumption_watts(&self) -> Result<f64> {
         let out = exec::run_capture("ioreg", &["-rn", "AppleSmartBattery"]);
         Ok(parse::mac_power_watts(&out))
     }
 
-    /// Go `GetBatteryTime`.
+    /// Formats remaining battery time via `pmset -g batt`.
     fn time_remaining(&self) -> Result<String> {
         let out = exec::run_capture("pmset", &["-g", "batt"]);
         let charging = parse::mac_is_charging(&out);
         Ok(parse::mac_time_remaining(&out, charging))
     }
 
-    /// Rust-only capability probe (Go has no `IsStationary`): a Mac without an
-    /// internal battery runs on AC mains. A failed read also reports stationary so
-    /// the app boots on any Mac (AGENTS.md).
+    /// Detects whether device is running without an internal battery.
     fn is_stationary(&self) -> bool {
         let out = exec::run_capture("pmset", &["-g", "batt"]);
         !out.contains("InternalBattery")
@@ -54,19 +50,19 @@ impl PowerSource for MacOsBattery {
 pub struct MacOsCpu;
 
 impl CpuGovernor for MacOsCpu {
-    /// Go `GetNumCPUs`.
+    /// Number of logical CPUs available.
     fn num_cpus(&self) -> usize {
         std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1)
     }
 
-    /// Go `GetCores`.
+    /// Number of active online CPU cores.
     fn online_cores(&self) -> Result<usize> {
         Ok(self.num_cpus())
     }
 
-    /// Go `SetCores` is a no-op: macOS does not expose core offlining.
+    /// Setting online cores is a no-op on macOS.
     fn set_online_cores(&self, _count: usize) -> Result<()> {
         Ok(())
     }
@@ -80,41 +76,41 @@ impl CpuGovernor for MacOsCpu {
         ))
     }
 
-    /// Go `GetFreqLimit` has no meaningful value here (no frequency control).
+    /// Frequency limit is unsupported on macOS.
     fn freq_limit(&self) -> Result<u32> {
         Err(WattWardenError::Unsupported(
             "macOS exposes no CPU frequency scaling interface".into(),
         ))
     }
 
-    /// Go `SetFreqLimit` is a no-op.
+    /// Setting frequency limit is a no-op on macOS.
     fn set_freq_limit(&self, _mhz: u32) -> Result<()> {
         Ok(())
     }
 
-    /// Go `GetTurbo` returns `true` on macOS.
+    /// Turbo boost telemetry placeholder.
     fn turbo_enabled(&self) -> Result<bool> {
         Ok(true)
     }
 
-    /// Go `SetTurbo` is a no-op.
+    /// Setting turbo boost is a no-op on macOS.
     fn set_turbo_enabled(&self, _enabled: bool) -> Result<()> {
         Ok(())
     }
 
-    /// Go `GetEPP` returns `"default"`.
+    /// Energy performance preference placeholder.
     fn energy_performance_preference(&self) -> Result<String> {
         Ok("default".into())
     }
 
-    /// Go `SetEPP` is a no-op.
+    /// Setting energy performance preference is a no-op on macOS.
     fn set_energy_performance_preference(&self, _pref: &str) -> Result<()> {
         Ok(())
     }
 }
 
 impl CStateTelemetry for MacOsCpu {
-    /// Go has no C-state telemetry on macOS.
+    /// macOS does not expose raw C-state telemetry.
     fn cstates(&self) -> Result<Vec<CStateInfo>> {
         Ok(Vec::new())
     }
@@ -123,7 +119,7 @@ impl CStateTelemetry for MacOsCpu {
 pub struct MacOsDisplay;
 
 impl DisplayManager for MacOsDisplay {
-    /// Go `GetLCDBrightness`.
+    /// Reads display brightness percentage.
     fn brightness_percent(&self) -> Result<u8> {
         Ok(parse::mac_brightness_percent(&exec::run_capture(
             "brightness",
@@ -131,7 +127,7 @@ impl DisplayManager for MacOsDisplay {
         )))
     }
 
-    /// Go `SetLCDBrightness`: clamp `1..100`, write the `0.00..1.00` fraction.
+    /// Sets display brightness clamped between 1% and 100%.
     fn set_brightness_percent(&self, percent: u8) -> Result<()> {
         let p = percent.clamp(1, 100);
         exec::run_ignored("brightness", &[&format!("{:.2}", f64::from(p) / 100.0)]);
@@ -142,7 +138,7 @@ impl DisplayManager for MacOsDisplay {
 pub struct MacOsThreshold;
 
 impl ChargeThreshold for MacOsThreshold {
-    /// Go has no `GetChargeThreshold`; charging is managed by macOS itself.
+    /// macOS manages charging thresholds natively; custom thresholds are unsupported.
     fn supports_threshold(&self) -> bool {
         false
     }
@@ -163,17 +159,17 @@ impl ChargeThreshold for MacOsThreshold {
 pub struct MacOsPeripherals;
 
 impl PeripheralsController for MacOsPeripherals {
-    /// Go `GetKbdBacklight` returns `false`.
+    /// Keyboard backlight state.
     fn kbd_backlight(&self) -> Result<bool> {
         Ok(false)
     }
 
-    /// Go `SetKbdBacklight` is a no-op.
+    /// Setting keyboard backlight is a no-op on macOS.
     fn set_kbd_backlight(&self, _enabled: bool) -> Result<()> {
         Ok(())
     }
 
-    /// Go `GetBluetooth`.
+    /// Queries Bluetooth state via system preferences.
     fn bluetooth_enabled(&self) -> Result<bool> {
         let out = exec::run_capture(
             "defaults",
@@ -186,7 +182,7 @@ impl PeripheralsController for MacOsPeripherals {
         Ok(out.trim() != "0")
     }
 
-    /// Go `SetBluetooth`: the defaults key *and* `blueutil --power`.
+    /// Configures Bluetooth state via defaults key and blueutil.
     fn set_bluetooth_enabled(&self, enabled: bool) -> Result<()> {
         let val = if enabled { "1" } else { "0" };
         exec::run_ignored(
@@ -203,7 +199,7 @@ impl PeripheralsController for MacOsPeripherals {
         Ok(())
     }
 
-    /// Go `GetWifiEnable`.
+    /// Queries Wi-Fi power status.
     fn wifi_enabled(&self) -> Result<bool> {
         let dev = parse::mac_wifi_device(&exec::run_capture(
             "networksetup",
@@ -213,7 +209,7 @@ impl PeripheralsController for MacOsPeripherals {
         Ok(out.to_lowercase().contains("on"))
     }
 
-    /// Go `SetWifiEnable`.
+    /// Configures Wi-Fi power status.
     fn set_wifi_enabled(&self, enabled: bool) -> Result<()> {
         let dev = parse::mac_wifi_device(&exec::run_capture(
             "networksetup",
@@ -228,58 +224,57 @@ impl PeripheralsController for MacOsPeripherals {
 pub struct MacOsTweaks;
 
 impl SystemTweaksController for MacOsTweaks {
-    /// Go `GetWifiPowerSave` returns `false`.
+    /// Wi-Fi power saving status.
     fn wifi_power_save(&self) -> Result<bool> {
         Ok(false)
     }
 
-    /// Go `SetWifiPowerSave` is a no-op.
+    /// Setting Wi-Fi power saving is a no-op on macOS.
     fn set_wifi_power_save(&self, _enabled: bool) -> Result<()> {
         Ok(())
     }
 
-    /// Go `GetAudioPowerSave` returns `false`.
+    /// Audio power saving status.
     fn audio_power_save(&self) -> Result<bool> {
         Ok(false)
     }
 
-    /// Go `SetAudioPowerSave` is a no-op.
+    /// Setting audio power saving is a no-op on macOS.
     fn set_audio_power_save(&self, _enabled: bool) -> Result<()> {
         Ok(())
     }
 
-    /// Go `GetAutosuspend` returns `false`.
+    /// USB autosuspend status.
     fn autosuspend(&self) -> Result<bool> {
         Ok(false)
     }
 
-    /// Go `SetAutosuspend` is a no-op.
+    /// Setting USB autosuspend is a no-op on macOS.
     fn set_autosuspend(&self, _enabled: bool) -> Result<()> {
         Ok(())
     }
 
-    /// Go `GetWatchdog` returns `true`.
+    /// Hardware watchdog status.
     fn nmi_watchdog(&self) -> Result<bool> {
         Ok(true)
     }
 
-    /// Go `SetWatchdog` is a no-op.
+    /// Setting hardware watchdog is a no-op on macOS.
     fn set_nmi_watchdog(&self, _enabled: bool) -> Result<()> {
         Ok(())
     }
 
-    /// Go `GetVMWriteback` returns `500` centisecs = `5` s, which is what the
-    /// inherited [`SystemTweaksController::vm_writeback_centisecs`] scales back to.
+    /// VM writeback cache delay in seconds (defaults to 5 seconds).
     fn vm_writeback_seconds(&self) -> Result<u32> {
         Ok(5)
     }
 
-    /// Go `SetVMWriteback` is a no-op.
+    /// Setting VM writeback delay is a no-op on macOS.
     fn set_vm_writeback_seconds(&self, _seconds: u32) -> Result<()> {
         Ok(())
     }
 
-    /// Go `ProcessPurge`.
+    /// Purges inactive memory caches via the `purge` command.
     fn process_purge(&self) -> Result<()> {
         exec::run_ignored("purge", &[]);
         Ok(())
@@ -289,7 +284,7 @@ impl SystemTweaksController for MacOsTweaks {
 pub struct MacOsCompositor;
 
 impl CompositorFocus for MacOsCompositor {
-    /// Go has no active-window tracker outside Hyprland/X11.
+    /// Window focus tracking is unsupported outside Linux X11/Wayland compositors.
     fn active_window_class(&self) -> Option<String> {
         None
     }
@@ -324,11 +319,8 @@ impl MacOsBackend {
         })
     }
 
-    /// 1-minute load average from `sysctl -n vm.loadavg`, in the units Linux
-    /// `/proc/loadavg` reports so the shared adaptive ladder can normalize it by the
-    /// CPU count. Go `getMacLoad()` divides by `NumCPU` itself and its caller uses
-    /// that directly, which is the same power level. `0.0` — the idle step — when the
-    /// query fails, exactly like Go.
+    /// 1-minute load average from `sysctl -n vm.loadavg`, formatted for
+    /// normalized scaling across logical CPU count. Returns `0.0` on error.
     pub fn load_average(&self) -> f64 {
         let out = exec::run_capture("sysctl", &["-n", "vm.loadavg"]);
         let cleaned = out.trim().trim_matches(['{', '}']).trim();
@@ -339,29 +331,28 @@ impl MacOsBackend {
             .unwrap_or(0.0)
     }
 
-    /// Go `ApplyModePerformance`.
+    /// Applies performance power management mode.
     pub fn apply_mode_performance(&self) {
         exec::run_ignored("pmset", &["-a", "lowpowermode", "0"]);
         exec::run_ignored("pmset", &["-a", "tcpkeepalive", "1"]);
         exec::run_ignored("pmset", &["-a", "displaysleep", "10"]);
     }
 
-    /// Go `ApplyModeExtreme`.
+    /// Applies extreme power saving mode.
     pub fn apply_mode_extreme(&self) {
         exec::run_ignored("pmset", &["-a", "lowpowermode", "1"]);
         exec::run_ignored("pmset", &["-a", "tcpkeepalive", "0"]);
         exec::run_ignored("pmset", &["-a", "displaysleep", "3"]);
     }
 
-    /// Go `ApplyModeRestore`.
+    /// Restores standard power management mode.
     pub fn apply_mode_restore(&self) {
         exec::run_ignored("pmset", &["-a", "lowpowermode", "0"]);
         exec::run_ignored("pmset", &["-a", "tcpkeepalive", "1"]);
         exec::run_ignored("pmset", &["-a", "displaysleep", "10"]);
     }
 
-    /// Go `GetOS()` (`backend_darwin.go:42`). The dashboard uses it to pick the menu
-    /// rows and the summary line.
+    /// Operating system identifier.
     pub fn os_name(&self) -> &'static str {
         "macOS"
     }
@@ -382,8 +373,7 @@ impl MacOsBackend {
         }
     }
 
-    /// Maps the shared [`PowerProfile`] onto the Go mode functions. Go has no
-    /// "Auto Extreme" profile, so it shares the restore/performance pmset set.
+    /// Maps [`PowerProfile`] to native power management modes.
     pub fn apply_profile(&self, profile: &PowerProfile) -> Result<()> {
         match profile {
             PowerProfile::Performance => self.apply_mode_performance(),
@@ -394,11 +384,10 @@ impl MacOsBackend {
     }
 }
 
-/// Port of Go `TestDarwinBackendNativeCommands` (`hal/backend_darwin_test.go`).
+/// Integration tests for native macOS command runner mocks.
 ///
-/// Same fake `pmset`/`ioreg`/`purge` shell scripts on `PATH`, same assertions. The
-/// scripts are POSIX `sh`, so the test runs here on Linux *and* in the macOS CI;
-/// only the module's `pub use` is gated, the logic is not.
+/// Uses mock `pmset`/`ioreg`/`purge` shell scripts on `PATH`. The
+/// scripts are POSIX `sh`, so the test runs here on Linux as well as on macOS.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -414,7 +403,7 @@ mod tests {
     }
 
     /// Prepends `dir` to `PATH` and points `WATTWARDEN_TEST_LOG` at the log, running
-    /// `body` under the process-wide env lock (the Go test uses `t.Setenv`).
+    /// `body` under the process-wide env lock.
     fn with_fake_path<T>(dir: &Path, log: &Path, body: impl FnOnce() -> T) -> T {
         let _guard = crate::exec::env_lock();
         let old_path = std::env::var_os("PATH").unwrap_or_default();
@@ -431,13 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn os_name_matches_go() {
+    fn os_name_identifies_macos() {
         assert_eq!(MacOsBackend::new().unwrap().os_name(), "macOS");
     }
 
     #[test]
     fn native_commands_drive_the_backend() {
-        let dir = std::env::temp_dir().join(format!("ww_mac_go_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ww_mac_test_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let log = dir.join("commands.log");

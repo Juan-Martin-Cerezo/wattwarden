@@ -1,14 +1,10 @@
 //! LCD backlight brightness control.
 //!
-//! Faithful transcription of `hal/backend_linux.go`:
-//!
-//! * `GetLCDBrightness()` -> first `/sys/class/backlight/*` entry (glob order) with
-//!   `max_brightness > 0` yields `(brightness * 100) / max_brightness` (integer
-//!   division); then the `brightnessctl -m` 4th comma field without its `%`; then
-//!   the hard-coded `100`.
-//! * `SetLCDBrightness(p)` -> clamp `1..=100`, write `(p * max) / 100` on **every**
-//!   backlight with `max > 0`, then also run `brightnessctl set N%` (best effort:
-//!   a missing binary is not an error).
+//! * `brightness_percent()` -> checks `/sys/class/backlight/*` entries with
+//!   `max_brightness > 0`, computing `(brightness * 100) / max_brightness`;
+//!   falls back to `brightnessctl -m` output, or `FALLBACK_BRIGHTNESS_PERCENT`.
+//! * `set_brightness_percent(p)` -> clamps `1..=100`, writes `(p * max) / 100` on every
+//!   backlight device with `max > 0`, and additionally triggers `brightnessctl set N%`.
 //!
 //! All sysfs access goes through [`SysfsRoot`]; the external `brightnessctl` call is
 //! best effort and degrades silently when the tool is absent.
@@ -19,7 +15,7 @@ use wattwarden_core::{DisplayManager, Result, WattWardenError};
 
 const BACKLIGHT_BASE: &str = "sys/class/backlight";
 
-/// Go `GetLCDBrightness` last-resort value.
+/// Default fallback brightness percentage when all interfaces fail.
 pub const FALLBACK_BRIGHTNESS_PERCENT: u8 = 100;
 
 pub struct LinuxBacklight {
@@ -41,7 +37,7 @@ impl LinuxBacklight {
         Ok(Self { root })
     }
 
-    /// Sorted backlight device names (glob order: `filepath.Glob` sorts).
+    /// Sorted backlight device names.
     fn devices(&self) -> Vec<String> {
         self.root.names(BACKLIGHT_BASE)
     }
@@ -73,7 +69,7 @@ impl DisplayManager for LinuxBacklight {
             }
         }
 
-        // Go fallback: `brightnessctl -m` -> "device,class,current,42%,..." (field 4).
+        // Fallback: brightnessctl -m -> "device,class,current,42%,..." (field 4).
         let out = cmd::run_capture("brightnessctl", &["-m"]);
         if !out.is_empty() {
             let parts: Vec<&str> = out.split(',').collect();
@@ -88,7 +84,6 @@ impl DisplayManager for LinuxBacklight {
     }
 
     fn set_brightness_percent(&self, percent: u8) -> Result<()> {
-        // Go: `if percent < 1 { percent = 1 }; if percent > 100 { percent = 100 }`.
         let p = percent.clamp(1, 100);
 
         for device in self.devices() {
@@ -102,7 +97,7 @@ impl DisplayManager for LinuxBacklight {
             }
         }
 
-        // Best effort, mirrors Go's ignored `brightnessctl set N%` exit status.
+        // Best effort external brightness adjustment.
         cmd::run_ignored("brightnessctl", &["set", &format!("{p}%")]);
         Ok(())
     }

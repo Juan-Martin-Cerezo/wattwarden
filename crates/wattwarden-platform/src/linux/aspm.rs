@@ -1,14 +1,11 @@
 //! PCIe Active State Power Management (ASPM) policy.
 //!
-//! Faithful transcription of `hal/backend_linux.go`:
+//! * Reads `/sys/module/pcie_aspm/parameters/policy` and extracts the active policy
+//!   enclosed in brackets `[...]` (the standard Linux kernel notation). When no brackets
+//!   are present, returns the trimmed raw content; a missing file yields `""`.
+//! * Writes the selected policy to the kernel sysfs node.
 //!
-//! * `GetASPM()` reads `/sys/module/pcie_aspm/parameters/policy` and returns the
-//!   token wrapped in `[...]` (the kernel marks the active policy that way). When
-//!   there are no brackets the raw content is returned, and a missing file yields
-//!   `""` exactly like Go's `readSys`.
-//! * `SetASPM(p)` writes the policy verbatim.
-//!
-//! The path is resolved through [`SysfsRoot`] so the whole probe is relocatable.
+//! The path is resolved through [`SysfsRoot`] so the whole probe is relocatable and mockable.
 
 use crate::linux::sysfs::SysfsRoot;
 use tracing::debug;
@@ -64,7 +61,7 @@ impl Default for LinuxAspm {
     }
 }
 
-/// Go `GetASPM`: first whitespace token wrapped in brackets, else the raw string.
+/// Extracts the active ASPM policy: first whitespace token wrapped in brackets, else the raw string.
 pub fn parse_aspm_policy(content: &str) -> String {
     for word in content.split_whitespace() {
         if word.starts_with('[') && word.ends_with(']') && word.len() >= 2 {
@@ -76,7 +73,7 @@ pub fn parse_aspm_policy(content: &str) -> String {
 
 impl AspmController for LinuxAspm {
     fn aspm_policy(&self) -> Result<String> {
-        // Go `readSys` never errors; a missing file simply reads as "".
+        // Missing files safely read as empty strings without bubbling errors.
         Ok(parse_aspm_policy(&self.root.read(ASPM_POLICY_PATH)))
     }
 

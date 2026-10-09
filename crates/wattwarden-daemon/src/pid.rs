@@ -2,46 +2,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use wattwarden_core::{Result, WattWardenError};
 
-/// Go `service.IsProcessAlive`: does the PID belong to a live process?
+/// Checks whether a process with the given PID is actively running.
 ///
-/// Each platform is asked the way it can answer: procfs on Linux, signal 0 on the
-/// other Unices (macOS has no `/proc` — assuming it there made the daemon look dead
-/// on a machine where it was running) and `OpenProcess` on Windows, which is what
-/// Go's `os.FindProcess` rejects a stale PID with.
+/// Uses `/proc/{pid}` on Linux and signal 0 probing on macOS/BSD.
 #[cfg(target_os = "linux")]
 fn process_alive(pid: i32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// Signal 0 delivers nothing and only reports whether the PID exists
-/// (`process.Signal(syscall.Signal(0))` in Go).
+/// Signal 0 delivers no signal and only checks for process existence.
 #[cfg(all(unix, not(target_os = "linux")))]
 fn process_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
-}
-
-#[cfg(windows)]
-fn process_alive(pid: i32) -> bool {
-    // PROCESS_QUERY_LIMITED_INFORMATION: the least access that still opens a process
-    // we may not own.
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-        fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
-    }
-
-    // SAFETY: both calls take plain scalars, the returned handle is only tested for
-    // null and then closed exactly once — it is never dereferenced.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
-        if handle.is_null() {
-            return false;
-        }
-        CloseHandle(handle);
-        true
-    }
 }
 
 pub struct PidManager {

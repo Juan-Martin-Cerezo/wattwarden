@@ -451,8 +451,7 @@ fn desktop_without_battery_boots_and_writes_nothing_charge_related() {
     assert!(!caps.has_charge_threshold);
 
     // The source degrades to Stationary AC instead of failing: 0 % capacity, no
-    // error, and the AC line state is still reported (Go `IsCharging` reads the
-    // `Mains` supply's `online`, battery or not — hence charging = true here).
+    // error, and the AC line state is still reported from the Mains supply's `online`.
     assert!(backend.battery.is_stationary());
     assert_eq!(backend.battery.battery_percentage().unwrap(), 0);
     assert!(backend.battery.is_charging().unwrap());

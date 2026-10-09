@@ -158,7 +158,7 @@ impl DaemonRunner {
             None => self.active_window_class(),
         };
 
-        // Go backend_linux.go:884-909:
+        // Window classification rules:
         // isTerminal: class == "" || contains(kitty|foot|alacritty|wezterm|ghostty|xterm) -> 12%
         // isHeavyUI: contains(firefox|chrome|chromium|brave|zen|code|cursor|idea|studio) -> 30%
         // other: 20%
@@ -233,9 +233,9 @@ impl DaemonRunner {
             };
         }
 
-        // Adaptive ladder, plugged in or not — Go backend_linux.go:937-991 shape.
+        // Adaptive ladder, plugged in or on battery power.
         // The load comes from whatever cheap source the platform has (procfs,
-        // `sysctl`, `typeperf`); a platform without one reports 0.0 and the ladder
+        // `sysctl`); a platform without one reports 0.0 and the ladder
         // stays on its idle step.
         let load = self.backend.load_average();
         let power_level = (load / ncpu as f64).min(1.0);
@@ -289,10 +289,7 @@ impl DaemonRunner {
             }
         }
 
-        // Turbo thresholds per approved table (the spec labels the middle steps
-        // 0.67/0.33 after 2-decimal rounding; compare against the exact step
-        // fractions so step 2/3 counts for Medium and step 1/3 for Low).
-        // High stays exactly as the Go-validated `>= 0.8`.
+        // Turbo thresholds per level table. High profile gates turbo boost at >= 0.8.
         let target_turbo = match level {
             AutoExtremeLevel::High => discrete_power >= 0.8,
             AutoExtremeLevel::Medium => discrete_power >= 2.0 / 3.0,
@@ -414,7 +411,7 @@ impl DaemonRunner {
         // (perfil y/o umbral de carga). Sin ajustes, no se toca nada.
         self.apply_boot_settings(&config);
 
-        // Run immediately once before the loop, exactly as Go does
+        // Run initial logic pass immediately before starting periodic loop
         self.apply_logic();
         self.apply_brightness();
 
@@ -614,8 +611,8 @@ mod tests {
         root
     }
 
-    /// (a) Escalera High a batería, byte a byte como Go: load normalizado
-    /// 0.0, 0.2, 0.5, 1.0 -> escalones 0 / 0.333 / 0.667 / 1.0 con techo 40 %.
+    /// (a) High level profile on battery: normalized load
+    /// 0.0, 0.2, 0.5, 1.0 -> discrete steps 0 / 0.333 / 0.667 / 1.0 with 40% ceiling.
     #[test]
     fn test_a_battery_adaptive_quantized_steps_and_40_percent_ceiling() {
         let root = fake_intel_laptop("test_a");
@@ -759,12 +756,10 @@ mod tests {
         let _ = fs::remove_dir_all(root.root());
     }
 
-    /// Juan: la escalera corre enchufado o no. El viejo restore de Go a 115 W
-    /// ya no existe: con la misma carga da el mismo resultado que a bateria.
+    /// Verifies adaptive power ladder runs consistently across AC and battery.
     #[test]
-    fn test_e_plugged_in_runs_ladder_not_go_restore() {
-        // Dell Vostro shape: RAPL range 0..115 W so the Go clamp lands on 115 W
-        // in both constraints, like the real machine in the A/B report.
+    fn test_e_plugged_in_runs_adaptive_ladder() {
+        // Dell Vostro topology: RAPL range 0..115 W.
         let dir = std::env::temp_dir().join(format!("ww_daemon_test_e_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let root = SysfsRoot::new(&dir);
@@ -834,15 +829,14 @@ mod tests {
             "65000000\n",
         );
 
-        // Plugged in: Go `IsCharging` sees `Mains` + `online == "1"`
-        // (`backend_linux.go:165-178`).
+        // Plugged in: AC online status is detected.
         write(&root, &format!("{BAT}/type"), "Battery\n");
         write(&root, &format!("{BAT}/status"), "Charging\n");
         write(&root, "sys/class/power_supply/AC/type", "Mains\n");
         write(&root, "sys/class/power_supply/AC/online", "1\n");
 
-        // The plugged-in step now runs the ladder: assert it writes the ladder
-        // values for the simulated idle load, NOT the old Go 115 W restore.
+        // The plugged-in step runs the ladder: assert it writes the ladder
+        // values for the simulated idle load.
         let backend = PlatformBackend::with_root(root.clone()).unwrap();
         assert!(backend.battery.is_charging().unwrap());
         write(&root, "proc/loadavg", "0.00 0.00 0.00 1/100 1234\n");
@@ -1336,9 +1330,9 @@ mod tests {
         let _ = fs::remove_dir_all(root.root());
     }
 
-    /// (d) `high` no reescribe turbo/EPP distintos de Go (test de preservación de comportamiento)
+    /// (d) High level profile invariants (EPP, governor, turbo gating).
     #[test]
-    fn test_d_high_level_preserves_go_behavior() {
+    fn test_d_high_level_invariants() {
         let root = fake_intel_laptop("test_d");
         let backend = PlatformBackend::with_root(root.clone()).unwrap();
         let config = Config {
@@ -1385,7 +1379,7 @@ mod tests {
                 expected_no_turbo
             );
 
-            // Peripherals must always match Go battery state
+            // Peripherals power-saving invariants
             assert_eq!(
                 read(&root, "sys/module/pcie_aspm/parameters/policy"),
                 "powersave"
@@ -2095,7 +2089,7 @@ mod tests {
 
 /// The adaptive ladder is shared with every platform, so the one guarantee that must
 /// hold there too is that a machine with no discoverable range gets no panic and no
-/// invented target. macOS and Windows expose neither an immutable CPU frequency range
+/// invented target. macOS exposes neither an immutable CPU frequency range
 /// nor RAPL/GPU controls, so every value the ladder would write stays at zero.
 #[cfg(all(test, not(target_os = "linux")))]
 mod non_linux_tests {

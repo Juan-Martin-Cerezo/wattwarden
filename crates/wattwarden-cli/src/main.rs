@@ -6,9 +6,9 @@ use cli::{run, CliRuntime};
 use std::io::Write;
 #[cfg(target_os = "linux")]
 use std::path::Path;
-// Only Linux (systemd) and Windows (taskkill) shell out from the CLI; macOS drives
+// Only Linux (systemd) shells out from the CLI; macOS drives
 // everything through its backend.
-#[cfg(any(target_os = "linux", not(unix)))]
+#[cfg(target_os = "linux")]
 use std::process::Command;
 use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
 use wattwarden_core::Config;
@@ -16,7 +16,7 @@ use wattwarden_daemon::{spawn, DaemonRunner, PidManager};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 use wattwarden_tui::{run_tui, App};
 
-/// `tracing_subscriber` writer routing daemon logs to the Go log file
+/// `tracing_subscriber` writer routing daemon logs to the system log file
 /// (`/var/log/wattwarden.log`), never to stdout. Falls back to a sink when the
 /// file cannot be opened (e.g. non-root), so the TUI alternate screen is never
 /// touched either way.
@@ -34,7 +34,7 @@ impl<'a> MakeWriter<'a> for DaemonLogWriter {
     }
 }
 
-/// Go `service.IsDaemonActive()`: PID file alive, else `systemctl is-active`.
+/// Checks whether the background daemon or system service is active.
 fn daemon_active() -> bool {
     if PidManager::new().is_running() {
         return true;
@@ -53,7 +53,7 @@ fn daemon_active() -> bool {
     false
 }
 
-/// Go `service.StartBackgroundDaemon`.
+/// Starts the background daemon service or detached daemon process.
 fn start_background_daemon() -> Result<(), String> {
     service::sync_installed_binary();
 
@@ -77,15 +77,13 @@ fn start_background_daemon() -> Result<(), String> {
         return Ok(());
     }
 
-    // Go also starts an in-process loop; here the detached daemon process is the
-    // durable equivalent (the foreground CLI exits immediately after this returns).
-    // Go `SpawnDetachedDaemon`: stdio redirected to /var/log/wattwarden.log so the
-    // child never writes on the caller's terminal.
+    // Spawn detached daemon process with stdio redirected to /var/log/wattwarden.log
+    // so the child process never writes on the caller's terminal.
     let _ = spawn::spawn_detached_daemon();
     Ok(())
 }
 
-/// Go `service.StopBackgroundDaemon`.
+/// Stops the background daemon process or system service.
 fn stop_background_daemon() {
     let mut cfg = Config::load_or_default(None);
     cfg.auto_extreme_enabled = false;
@@ -100,19 +98,10 @@ fn stop_background_daemon() {
 
     let pid = PidManager::new();
     if let Some(p) = pid.read_pid() {
-        #[cfg(unix)]
-        {
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(p),
-                nix::sys::signal::Signal::SIGTERM,
-            );
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = Command::new("taskkill")
-                .args(["/F", "/PID", &p.to_string()])
-                .status();
-        }
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(p),
+            nix::sys::signal::Signal::SIGTERM,
+        );
     }
     pid.release();
 }
@@ -144,10 +133,8 @@ fn build_backend() -> Result<LinuxBackend, String> {
     }
 }
 
-/// Go `service.RunDaemon`. The tracing subscriber writes to the Go daemon log
-/// file (`/var/log/wattwarden.log`), never to stdout: `--daemon` is either run
-/// in the foreground by a service manager (which captures stdio itself) or
-/// spawned detached from the TUI/CLI (whose stdio is already redirected).
+/// Runs the daemon loop in the foreground with tracing output routed to
+/// `/var/log/wattwarden.log`, keeping stdio clean for terminal supervisors.
 fn run_daemon() -> Result<(), String> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new("info"))
@@ -174,7 +161,7 @@ fn run_daemon() -> Result<(), String> {
     })
 }
 
-/// Go `ui.StartDashboard`.
+/// Launches the interactive terminal dashboard.
 fn launch_dashboard() -> Result<(), String> {
     let backend = build_backend()?;
     let config = Config::load_or_default(None);

@@ -1,12 +1,8 @@
-//! Paridad Go→Rust verificada contra un sysfs FALSO de laptop Intel.
+//! Hardware sysfs contract verified against simulated Linux laptop topologies.
 //!
-//! Estos tests son el criterio de aceptación de `PARITY.md` §5: afirman los valores
-//! EXACTOS que escribe el binario Go de `master`, sin root, sin hardware real y sin
-//! binarios externos. Todo pasa por `WATTWARDEN_SYSFS_ROOT` vía `SysfsRoot::new(dir)`.
-//!
-//! Sólo Linux: el sysfs falso y los controladores `wattwarden_platform::linux::*` que
-//! afirman no existen en los otros backends. Lo agnóstico de plataforma vive en los
-//! unit tests de cada crate.
+//! Validates sysfs read/write boundaries, clamping invariants, core online/offline scaling,
+//! and graceful degradation across missing nodes without root privileges or physical hardware.
+//! All operations execute via `WATTWARDEN_SYSFS_ROOT` through `SysfsRoot::new(dir)`.
 #![cfg(target_os = "linux")]
 
 use std::fs;
@@ -168,9 +164,9 @@ fn fake_intel_laptop(tag: &str) -> SysfsRoot {
     root
 }
 
-// --- (a) + (b) freq bounds y SetFreqLimit (Go: clamp a bounds, min+max en TODOS los cpus) ---
+// --- (a) + (b) Frequency bounds and SetFreqLimit (clamped to bounds on all CPUs) ---
 #[test]
-fn a_b_freq_bounds_and_limit_match_go() {
+fn freq_bounds_and_limit_hardware_contract() {
     let root = fake_intel_laptop("freq");
     let cpu = wattwarden_platform::linux::LinuxCpuGovernor::with_root(root.clone());
 
@@ -188,7 +184,7 @@ fn a_b_freq_bounds_and_limit_match_go() {
         );
     }
 
-    // 99999 clampa al hw max (Go ApplyModePerformance), 100 clampa al hw min.
+    // High values clamp to hardware ceiling, low values clamp to hardware floor.
     cpu.set_freq_limit(99_999).unwrap();
     assert_eq!(
         read(&root, &format!("{CPU}/cpu0/cpufreq/scaling_max_freq")),
@@ -205,14 +201,14 @@ fn a_b_freq_bounds_and_limit_match_go() {
     let _ = fs::remove_dir_all(root.root());
 }
 
-// --- (c) SetCores: cpu1..cpu2 en 1, cpu3..cpu7 en 0, y re-aplica el freq limit ---
+// --- (c) SetCores: cpu1..cpu2 online, cpu3..cpu7 offline, preserving frequency limits ---
 #[test]
-fn c_set_online_cores_matches_go_including_freq_reapply() {
+fn set_online_cores_preserves_frequency_limit() {
     let root = fake_intel_laptop("cores");
     let cpu = wattwarden_platform::linux::LinuxCpuGovernor::with_root(root.clone());
 
     cpu.set_freq_limit(2000).unwrap();
-    // Simula que algo pisó el limite antes de encender/apagar cores.
+    // Simulate external alteration before core count adjustments.
     write(
         &root,
         &format!("{CPU}/cpu3/cpufreq/scaling_max_freq"),
@@ -226,7 +222,7 @@ fn c_set_online_cores_matches_go_including_freq_reapply() {
     for i in 3..8 {
         assert_eq!(read(&root, &format!("{CPU}/cpu{i}/online")), "0");
     }
-    // Go re-aplica SetFreqLimit(GetFreqLimit()) al final de SetCores.
+    // Re-applies active frequency ceiling after core adjustments.
     assert_eq!(
         read(&root, &format!("{CPU}/cpu3/cpufreq/scaling_max_freq")),
         "2000000"
@@ -271,9 +267,9 @@ fn d_rapl_discovers_by_name_and_writes_microwatts() {
     let _ = fs::remove_dir_all(root.root());
 }
 
-// --- (e) GPU: card1 preferida, bounds con fallbacks, orden min→max ---
+// --- (e) GPU: card1 preferred, bounds with fallbacks, order min -> max ---
 #[test]
-fn e_gpu_bounds_and_write_order_match_go() {
+fn gpu_bounds_and_write_order() {
     let root = fake_intel_laptop("gpu");
     let gpu = LinuxGpu::with_root(root.clone()).unwrap();
     assert_eq!(gpu.gpu_bounds().unwrap(), (300, 1100));
@@ -287,16 +283,16 @@ fn e_gpu_bounds_and_write_order_match_go() {
     gpu.set_gpu_freq(10).unwrap();
     assert_eq!(read(&root, &format!("{DRM}/card0/gt_max_freq_mhz")), "300");
 
-    // Si aparece card1 (dGPU), gana card1 — exactamente el orden de Go.
+    // If card1 (discrete GPU) appears, card1 takes precedence.
     write(&root, &format!("{DRM}/card1/gt_max_freq_mhz"), "1500\n");
     let gpu2 = LinuxGpu::with_root(root.clone()).unwrap();
-    // Go backend_linux.go:407-408: gt_RP0_freq_mhz ausente -> lee gt_max_freq_mhz (1500)
+    // When gt_RP0_freq_mhz is absent, read gt_max_freq_mhz (1500).
     assert_eq!(gpu2.gpu_bounds().unwrap(), (300, 1500));
 
     let _ = fs::remove_dir_all(root.root());
 }
 
-// --- (f) EPP escribe la preferencia en TODOS los cpus + governor derivado ---
+// --- (f) EPP writes preference to all CPUs + derived governor ---
 #[test]
 fn f_epp_writes_preference_and_governor_on_every_cpu() {
     let root = fake_intel_laptop("epp");
@@ -318,7 +314,7 @@ fn f_epp_writes_preference_and_governor_on_every_cpu() {
         );
     }
 
-    // Cualquier otra preferencia (incluido "power") deja el governor en powersave.
+    // Any other preference sets governor to powersave.
     cpu.set_energy_performance_preference("power").unwrap();
     assert_eq!(
         read(
@@ -335,26 +331,26 @@ fn f_epp_writes_preference_and_governor_on_every_cpu() {
     let _ = fs::remove_dir_all(root.root());
 }
 
-// --- (g) Backlight: get con la fórmula, set con clamp 1..100 y fórmula (p*max)/100 ---
+// --- (g) Backlight: percentage calculation, clamping 1..100 and formula (p*max)/100 ---
 #[test]
-fn g_backlight_percent_matches_go() {
+fn backlight_percent_mapping() {
     let root = fake_intel_laptop("bl");
     let bl = LinuxBacklight::with_root(root.clone()).unwrap();
 
     assert_eq!(bl.brightness_percent().unwrap(), 50); // (500*100)/1000
     bl.set_brightness_percent(75).unwrap();
     assert_eq!(read(&root, &format!("{BL}/brightness")), "750");
-    bl.set_brightness_percent(0).unwrap(); // clamp inferior 1 -> 10
+    bl.set_brightness_percent(0).unwrap(); // lower clamp 1 -> 10
     assert_eq!(read(&root, &format!("{BL}/brightness")), "10");
-    bl.set_brightness_percent(120).unwrap(); // clamp superior 100 -> 1000
+    bl.set_brightness_percent(120).unwrap(); // upper clamp 100 -> 1000
     assert_eq!(read(&root, &format!("{BL}/brightness")), "1000");
 
     let _ = fs::remove_dir_all(root.root());
 }
 
-// --- (h) Periféricos y tweaks: get/set con los fallbacks de Go ---
+// --- (h) Peripherals and kernel system tweaks ---
 #[test]
-fn h_peripherals_and_tweaks_match_go() {
+fn peripherals_and_tweaks_hardware_contract() {
     let root = fake_intel_laptop("tweaks");
     let per = LinuxPeripherals::with_root(root.clone());
     let tw = LinuxSystemTweaks::with_root(root.clone());
@@ -483,23 +479,23 @@ fn backend_with_root_reaches_every_subsystem() {
     let _ = fs::remove_dir_all(root.root());
 }
 
-// --- Nada de esto puede depender del hardware real: la Pi no tiene batería ni RAPL ---
+// --- Independent of real host hardware: graceful fallback when sysfs nodes are missing ---
 #[test]
-fn empty_root_degrades_with_go_fallbacks_and_never_panics() {
-    let dir = std::env::temp_dir().join(format!("ww_parity_empty_{}", std::process::id()));
+fn empty_root_degrades_gracefully_without_panic() {
+    let dir = std::env::temp_dir().join(format!("ww_contract_empty_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let root = SysfsRoot::new(&dir);
 
     let backend = wattwarden_platform::linux::LinuxBackend::with_root(root.clone()).unwrap();
-    // Fallbacks de Go: freq 400/1600, sin GPU/RAPL/backlight, batería 0.
+    // Default safe fallbacks: freq 400/1600 MHz, no GPU/RAPL/backlight, battery 0%.
     assert_eq!(backend.cpu.freq_bounds().unwrap(), (400, 1600));
     assert_eq!(backend.battery.battery_percentage().unwrap(), 0);
     assert!(backend.gpu.is_none());
     assert!(backend.rapl.is_none());
     assert!(backend.backlight.is_none());
 
-    // Los perfiles no pueden panickear ni escribir en el /sys real.
+    // Power profiles must never panic or write invalid state.
     for profile in [
         wattwarden_core::PowerProfile::Performance,
         wattwarden_core::PowerProfile::Extreme,

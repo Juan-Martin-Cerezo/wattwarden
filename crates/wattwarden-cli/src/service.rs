@@ -1,14 +1,10 @@
-//! Service installation + installed-binary sync, transcribed from `service/service.go`.
-//!
-//! The exact systemd unit text is part of the interface contract (`PARITY.md` §3) and
-//! deliberately differs from `wattwarden-daemon`'s internal helper, so it lives here in
-//! the CLI crate rather than reusing that one.
+//! Service installation and system binary synchronization.
 
 #[cfg(unix)]
 use std::path::Path;
 use std::process::Command;
 
-/// Go `InstallService`: the unit always points at the installed location.
+/// Target system install location for the WattWarden binary.
 pub const INSTALLED_BINARY: &str = "/usr/local/bin/wattwarden";
 
 #[cfg(target_os = "linux")]
@@ -17,8 +13,7 @@ const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/wattwarden.service";
 #[cfg(target_os = "macos")]
 const PLIST_PATH: &str = "/Library/LaunchDaemons/com.wattwarden.daemon.plist";
 
-/// Go `SyncInstalledBinary`: when running as root from a different path, copy the
-/// current executable to `/usr/local/bin/wattwarden` with mode 0755.
+/// Synchronizes the executing binary to `/usr/local/bin/wattwarden` when running as root.
 pub fn sync_installed_binary() {
     #[cfg(unix)]
     {
@@ -44,7 +39,7 @@ pub fn sync_installed_binary() {
     }
 }
 
-/// The exact systemd unit body from `PARITY.md` §3 / Go `InstallService`.
+/// Systemd unit definition for the WattWarden background service.
 #[cfg(target_os = "linux")]
 pub fn systemd_unit_text() -> String {
     format!(
@@ -64,7 +59,7 @@ pub fn systemd_unit_text() -> String {
     )
 }
 
-/// Go `InstallService`.
+/// Installs and activates the platform background service.
 pub fn install_service() -> Result<(), String> {
     sync_installed_binary();
 
@@ -112,35 +107,11 @@ pub fn install_service() -> Result<(), String> {
         return Ok(());
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("schtasks")
-            .args([
-                "/Create",
-                "/TN",
-                "WattWardenDaemon",
-                "/TR",
-                &format!("\"{INSTALLED_BINARY}\" --daemon"),
-                "/SC",
-                "ONSTART",
-                "/RU",
-                "SYSTEM",
-                "/RL",
-                "HIGHEST",
-                "/F",
-            ])
-            .status();
-        let _ = Command::new("schtasks")
-            .args(["/Run", "/TN", "WattWardenDaemon"])
-            .status();
-        return Ok(());
-    }
-
     #[allow(unreachable_code)]
     Ok(())
 }
 
-/// Go `UninstallService`.
+/// Uninstalls and removes the platform background service.
 pub fn uninstall_service() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -158,14 +129,6 @@ pub fn uninstall_service() -> Result<(), String> {
             .args(["unload", "-w", PLIST_PATH])
             .status();
         let _ = std::fs::remove_file(PLIST_PATH);
-        return Ok(());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("schtasks")
-            .args(["/Delete", "/TN", "WattWardenDaemon", "/F"])
-            .status();
         return Ok(());
     }
 

@@ -18,8 +18,7 @@ const ASCII_LOGO: &[&str] = &[
 
 const BLOCKS: [char; 9] = [' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-/// Go `drawUI` summary line (`cli.go:171-172`): a single format for every OS, using
-/// the backend's own `GetOS()` and `Charging`/`Discharging` from `IsCharging()`.
+/// Summary line format across all platforms, displaying OS, battery status, time estimate, and wattage.
 fn summary_line(os: &str, battery_pct: u8, charging: bool, est: &str, watts: f64) -> String {
     let status = if charging { "Charging" } else { "Discharging" };
     format!("OS: {os} | Battery: {battery_pct}% ({status}) | Est: {est} | Power: {watts:.1}W")
@@ -268,10 +267,7 @@ fn draw_bar_graph(
     }
 }
 
-/// Go renders boolean rows as `[ACTIVE]`/`[OFF]`, never `[true]`/`[false]`.
-///
-/// `cli.go:250-252`: the raw `%v` value is wrapped in `[...]` and then `true`/`false`
-/// are rewritten to `ACTIVE`/`OFF`.
+/// Formats boolean states as `[ACTIVE]` or `[OFF]`.
 fn display_bool(value: bool) -> String {
     if value {
         "[ACTIVE]".into()
@@ -280,9 +276,7 @@ fn display_bool(value: bool) -> String {
     }
 }
 
-/// Go renders a numeric reading as `[<n>]`, or the literal `[N/A]` when the value is
-/// not positive (`cli.go:420-423`, `:427-430`, `:434-437`). This is the branch Rust
-/// used to get wrong (`[0]` instead of `[N/A]`).
+/// Formats numeric metrics as `[<n>]` or `[N/A]` when non-positive.
 fn format_number(value: i64) -> String {
     if value <= 0 {
         "[N/A]".into()
@@ -314,7 +308,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ),
         ActionItem::ProfileAutoExtreme => (
             "⚡ Auto Extreme Mode",
-            // Go derives this from the real daemon state, not from `config.profile`.
+            // Derived from active daemon status, not config profile.
             if app.is_daemon_active() {
                 "[ACTIVE]".into()
             } else {
@@ -404,8 +398,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
                 .as_ref()
                 .and_then(|bl| bl.brightness_percent().ok())
                 .unwrap_or(0);
-            // Go `cli.go:456` renders the bare `%d`; the `(%)` lives only in the label,
-            // so the value is `[100]`, not `[100%]`.
+            // Percentage label contains the % sign; value is rendered as bare number.
             ("LCD Brightness (%)", format!("[{b}]"), false)
         }
         ActionItem::KbdBacklight => {
@@ -437,8 +430,7 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
             ("Watchdog Kernel", display_bool(wd), wd)
         }
         ActionItem::VmWriteback => {
-            // Go `GetVMWriteback()` returns the raw centisecond value, hence the
-            // screen shows 500 (not 5) with the legacy "(s)" label.
+            // Raw centisecond value displayed with legacy seconds label.
             let wb = app.backend.tweaks.vm_writeback_centisecs();
             ("VM Writeback (s)", format!("[{}]", wb), false)
         }
@@ -673,7 +665,7 @@ fn draw_extreme_modal(buf: &mut Buffer, w: usize, h: usize) {
     for (row_offset, text, style) in lines {
         let mut text_x = box_x + (box_w.saturating_sub(text.chars().count())) / 2;
         if row_offset == 1 {
-            // Go shifts the warning title by one column to compensate for the emoji.
+            // Shift warning title by one column to compensate for emoji width.
             text_x += 1;
         }
         set_str(buf, text_x, box_y + row_offset, text, style);
@@ -684,16 +676,14 @@ fn draw_extreme_modal(buf: &mut Buffer, w: usize, h: usize) {
 mod tests {
     use super::*;
 
-    /// Go rewrites the raw `true`/`false` into `[ACTIVE]`/`[OFF]` (`cli.go:251-252`).
-    /// Locked down because it regressed here to `[true]`/`[false]`.
+    /// Boolean rows render as `[ACTIVE]`/`[OFF]`.
     #[test]
     fn golden_display_bool_is_active_or_off() {
         assert_eq!(display_bool(true), "[ACTIVE]");
         assert_eq!(display_bool(false), "[OFF]");
     }
 
-    /// Numeric readings are `[<n>]`, or the literal `[N/A]` when non-positive
-    /// (`cli.go:420-423`, `:427-430`, `:434-437`).
+    /// Numeric readings render as `[<n>]`, or literal `[N/A]` when non-positive.
     #[test]
     fn golden_numeric_values_are_bracketed_or_na() {
         assert_eq!(format_number(1100), "[1100]");
@@ -702,18 +692,16 @@ mod tests {
         assert_eq!(format_number(-3), "[N/A]");
     }
 
-    /// The LCD value keeps Go's bare `%d` (the `%` is only in the label).
+    /// LCD brightness value format.
     #[test]
     fn golden_lcd_brightness_value_has_no_percent_sign() {
         assert_eq!(format!("[{}]", 100), "[100]");
         assert_eq!(format!("[{}]", 0), "[0]");
     }
 
-    /// Go `drawUI` summary (`cli.go:171-172`): the OS comes from `GetOS()` and the
-    /// battery state from `IsCharging()`, one format for every platform. Locked down
-    /// because the line used to be hardcoded to `"OS: Linux"`.
+    /// Summary telemetry line formatting across supported platforms.
     #[test]
-    fn golden_summary_line_matches_go() {
+    fn golden_summary_line_formatting() {
         assert_eq!(
             summary_line("Linux", 82, false, "4:12", 12.0),
             "OS: Linux | Battery: 82% (Discharging) | Est: 4:12 | Power: 12.0W"
@@ -721,10 +709,6 @@ mod tests {
         assert_eq!(
             summary_line("macOS", 100, true, "Charging", 0.0),
             "OS: macOS | Battery: 100% (Charging) | Est: Charging | Power: 0.0W"
-        );
-        assert_eq!(
-            summary_line("Windows", 50, false, "1h 12m", 8.4),
-            "OS: Windows | Battery: 50% (Discharging) | Est: 1h 12m | Power: 8.4W"
         );
     }
 }

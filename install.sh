@@ -35,8 +35,10 @@ OS="$(uname -s)"
 case "${OS}" in
   Linux*)  OS_NAME=linux ;;
   Darwin*) OS_NAME=macos ;;
-  MINGW*|MSYS*|CYGWIN*) OS_NAME=windows ;;
-  *)       OS_NAME=fallback ;;
+  *)
+    echo "❌ Error: WattWarden only supports Linux and macOS." >&2
+    exit 1
+    ;;
 esac
 
 # Detect Architecture

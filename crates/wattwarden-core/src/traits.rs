@@ -57,7 +57,7 @@ pub trait CpuGovernor: Send + Sync {
     /// from mutable state (the very limits [`CpuGovernor::set_freq_limit`] writes)
     /// makes it inflate on every pass — the "ratchet". `None` means
     /// "undiscoverable" and callers must then **not write** a frequency at all.
-    /// Platforms with no frequency control (macOS, Windows) have no range and keep
+    /// Platforms with no frequency control (macOS) have no range and keep
     /// this default.
     fn discovered_freq_bounds(&self) -> Option<(u32, u32)> {
         None
@@ -228,18 +228,18 @@ pub trait SystemTweaksController: Send + Sync {
     /// Enable or disable USB/PCI runtime autosuspend
     fn set_autosuspend(&self, enabled: bool) -> Result<()>;
 
-    /// Raw `dirty_writeback_centisecs` value (Go `GetVMWriteback`): the unit the
+    /// Raw `dirty_writeback_centisecs` value: the unit the
     /// dashboard displays and adjusts one centisecond at a time, which
     /// [`SystemTweaksController::vm_writeback_seconds`] cannot express.
     ///
-    /// Defaults to the second-resolution value scaled up, which is exact on the
-    /// platforms where the setting is a constant (Go returns `500` on macOS and
-    /// Windows). Linux overrides it to read the real proc node.
+    /// Defaults to the second-resolution value scaled up, which is exact on
+    /// platforms where the setting is a constant (500 on macOS).
+    /// Linux overrides it to read the real procfs node.
     fn vm_writeback_centisecs(&self) -> i64 {
         self.vm_writeback_seconds().map_or(0, |s| s as i64 * 100)
     }
 
-    /// Best-effort write of the raw centisecond value (Go `SetVMWriteback`).
+    /// Best-effort write of the raw centisecond value.
     fn set_vm_writeback_centisecs(&self, centisecs: i64) -> Result<()> {
         self.set_vm_writeback_seconds((centisecs.max(0) / 100) as u32)
     }

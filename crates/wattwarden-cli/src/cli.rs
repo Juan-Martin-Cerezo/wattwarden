@@ -1,12 +1,10 @@
-//! Byte-for-byte CLI dispatch mirroring `main.go` from the Go reference (`master`).
+//! Command-line interface dispatcher for WattWarden.
 //!
-//! The Go binary is the specification (`PARITY.md` §3). Notably, an unknown flag is
-//! **not** a parse error: Go falls through to the root check and emits the generic
-//! "administrator/root privileges" message with exit code 1. Reproducing that is why
-//! this dispatcher is hand-written instead of going through `clap`.
+//! An unknown flag falls through to the root privilege check followed by
+//! the interactive dashboard.
 //!
 //! The `CliRuntime` trait isolates every effectful operation so the string/exit-code
-//! contract can be golden-tested without root, hardware, systemd or a terminal.
+//! contract can be unit-tested without root, hardware, systemd, or a terminal.
 
 use std::io::Write;
 
@@ -14,26 +12,26 @@ use std::io::Write;
 /// real platform/daemon/TUI; tests use an in-memory fake.
 pub trait CliRuntime {
     fn is_root(&self) -> bool;
-    /// `service.IsDaemonActive()`: PID file alive, or `systemctl is-active` == `active`.
+    /// Query whether the daemon is actively running (PID file or systemd service active).
     fn daemon_active(&self) -> bool;
     fn auto_brightness(&self) -> bool;
-    /// Go `SetAutoBrightness`: toggles the in-memory flag and persists the config.
+    /// Toggles the in-memory auto-brightness flag and persists configuration.
     fn set_auto_brightness(&self, enabled: bool);
-    /// Go `SyncInstalledBinary`.
+    /// Synchronizes the active binary to the system install location.
     fn sync_installed_binary(&self);
-    /// Go `StartBackgroundDaemon`.
+    /// Starts the background daemon process.
     fn start_background_daemon(&self) -> Result<(), String>;
-    /// Go `StopBackgroundDaemon`.
+    /// Stops the background daemon process.
     fn stop_background_daemon(&self);
     fn install_service(&self) -> Result<(), String>;
     fn uninstall_service(&self) -> Result<(), String>;
-    /// Go `service.RunDaemon` (blocking foreground loop).
+    /// Runs the daemon loop in the foreground.
     fn run_daemon(&self) -> Result<(), String>;
-    /// Go `ui.StartDashboard` (blocking interactive dashboard).
+    /// Launches the interactive dashboard.
     fn launch_dashboard(&self) -> Result<(), String>;
 }
 
-/// Exact Go help text (`main.go` `--help` case).
+/// Standard command usage and help output.
 pub fn print_help(out: &mut dyn Write) {
     let _ = writeln!(
         out,
@@ -75,9 +73,8 @@ pub fn print_help(out: &mut dyn Write) {
     );
 }
 
-/// Runs the CLI and returns the process exit code. Mirrors `main.go` argument order:
-/// only `args[1]` selects a command (and `args[2]` for `--brightness`), anything else
-/// falls through to the root check followed by the TUI.
+/// Runs the CLI and returns the process exit code. Primary subcommand is evaluated,
+/// and unhandled arguments fall through to the root check followed by the TUI.
 pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
     if let Some(cmd) = args.get(1).map(String::as_str) {
         match cmd {
@@ -231,8 +228,8 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
                 return 0;
             }
 
-            // Unknown first argument: Go does not error out, it falls through to the
-            // root check and (as root) to the dashboard.
+            // Unknown first argument: falls through to the root check
+            // and (as root) to the dashboard.
             _ => {}
         }
     }
@@ -348,11 +345,7 @@ mod tests {
         for flag in ["--help", "-h", "help"] {
             let (code, out) = run_args(&["wattwarden", flag], &rt);
             assert_eq!(code, 0, "help must exit 0");
-            assert_eq!(
-                out,
-                expected_help(),
-                "help text must match Go byte-for-byte"
-            );
+            assert_eq!(out, expected_help(), "help text must match standard format");
         }
     }
 
@@ -411,7 +404,7 @@ mod tests {
         assert_eq!(out, "Auto-brightness set to: true\n");
         assert!(rt.auto_brightness.get());
 
-        // Go accepts "1"/"true" as on; anything else is off.
+        // Accepts "1"/"true" as on; anything else is off.
         let (_, _) = run_args(&["wattwarden", "--brightness", "1"], &rt);
         assert!(rt.auto_brightness.get());
         let (_, _) = run_args(&["wattwarden", "--brightness", "true"], &rt);
@@ -431,7 +424,7 @@ mod tests {
         assert_eq!(code, 1);
         assert_eq!(out, expected);
 
-        // An unknown flag is NOT a clap-style parse error: Go falls back to the root check.
+        // An unknown flag falls back to the root check.
         let (code, out) = run_args(&["wattwarden", "--frobnicate"], &rt);
         assert_eq!(code, 1);
         assert_eq!(out, expected);
@@ -442,9 +435,7 @@ mod tests {
         assert_eq!(out, expected);
     }
 
-    /// Unknown flags are never a parse error, even as root: Go's `switch` on
-    /// `os.Args[1]` (`main.go`) has no `default` case, so an unknown first arg
-    /// falls through to `SyncInstalledBinary` + the dashboard. The fake runtime
+    /// Unknown flags fall through to `sync_installed_binary` + the dashboard. The fake runtime
     /// records the dashboard launch so the fall-through is observable.
     #[test]
     fn unknown_flag_falls_through_to_dashboard_as_root() {

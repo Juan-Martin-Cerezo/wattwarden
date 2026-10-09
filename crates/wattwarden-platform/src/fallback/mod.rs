@@ -250,8 +250,7 @@ impl FallbackBackend {
         })
     }
 
-    /// No Go backend exists for an unrecognised OS; the dashboard treats this like
-    /// Go's `else` branch of `buildMenuItems` (profiles only).
+    /// Returns the operating system identifier for fallback platforms.
     pub fn os_name(&self) -> &'static str {
         "Unknown"
     }
