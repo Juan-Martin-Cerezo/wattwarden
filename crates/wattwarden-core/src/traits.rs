@@ -1,3 +1,4 @@
+use crate::battery_health::BatteryHealth;
 use crate::error::Result;
 
 /// Battery and power telemetry provider
@@ -17,6 +18,12 @@ pub trait PowerSource: Send + Sync {
     /// Returns true if the system operates purely on AC mains power without a battery (e.g. Desktop PC, Server)
     fn is_stationary(&self) -> bool {
         false
+    }
+
+    /// Battery ageing snapshot (full vs design capacity, cycles, temperature).
+    /// Platforms without the data return `BatteryHealth::default()` (`present: false`).
+    fn health(&self) -> Result<BatteryHealth> {
+        Ok(BatteryHealth::default())
     }
 }
 

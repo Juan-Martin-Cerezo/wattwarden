@@ -94,12 +94,14 @@ WattWarden supports both intuitive subcommands and classic flags for rapid termi
 
 ```bash
 sudo wattwarden                      # Launch interactive TUI Dashboard (Default)
-wattwarden status                   # Check daemon running status, battery drain & profile
+wattwarden status                   # Check daemon running status & battery health summary
+wattwarden health                   # Full battery health report (capacity, cycles, charge limit)
+sudo wattwarden charge-limit <55-100|off> # Set or clear the battery charge ceiling (e.g. 80%)
+sudo wattwarden calibrate <start|status|done|abort> # Guided battery gauge recalibration
 sudo wattwarden start               # Start background daemon/service
 sudo wattwarden stop                # Stop background daemon/service
 sudo wattwarden profile <name>      # Apply profile (normal, performance, extreme, auto)
 sudo wattwarden level <low|medium|high> # Set Auto Extreme adaptive level
-sudo wattwarden threshold <pct>     # Set battery charge limit percentage (e.g. 80%)
 sudo wattwarden brightness <val>    # Set display brightness (1-100) or toggle auto (on/off)
 sudo wattwarden service install     # Install & enable auto-start system service
 sudo wattwarden service uninstall   # Remove system background service
@@ -107,6 +109,36 @@ sudo wattwarden daemon              # Run daemon in foreground (for systemd/laun
 ```
 
 *Classic flags (`wattwarden --status`, `sudo wattwarden --start`, `sudo wattwarden --stop`) are fully supported as drop-in aliases.*
+
+---
+
+## 🔋 Battery Health & Calibration
+
+`wattwarden health` reports what the battery's fuel gauge knows: full vs design capacity
+(the health percentage), cycle count, pack temperature, and the charge ceiling in effect.
+
+- **What the percentage means**: it is the *reported* health of the pack. With a charge
+  ceiling (e.g. 50–80%) the gauge never sees a full charge, so its capacity estimate can
+  drift downwards — reported health degrades faster than the chemistry actually does.
+- **Calibration** relearns the gauge: `sudo wattwarden calibrate start` lifts the ceiling
+  to 100%, then follow the guided phases (`status` walks charge → discharge to 10% →
+  recharge) and finish with `sudo wattwarden calibrate done`, which restores the previous
+  threshold. Run it every couple of months.
+- **Charge ceiling**: `sudo wattwarden charge-limit 80` persists the limit and applies it;
+  `charge-limit off` clears WattWarden's setting and *never* touches the hardware threshold
+  (it may be managed by the BIOS or another tool). The dashboard's **Charge Limit** row
+  cycles OFF → 55…100 the same way.
+- **macOS**: health metrics come from `ioreg` (`AppleSmartBattery`: full vs design
+  capacity, cycles, temperature). The charge ceiling and calibration are **Linux-only**:
+  macOS exposes no charge threshold and manages charging natively via Optimized Battery
+  Charging, so `charge-limit`/`calibrate` report unsupported instead of pretending.
+- **History & temperature** (opt-in, off by default): set `"battery_health_log": true` in
+  `/etc/wattwarden/config.json` to append an hourly CSV sample to
+  `/var/log/wattwarden-health.log`, and `"battery_temp_warn_c": 45` to get a log warning
+  when the pack runs hot while charging.
+
+WattWarden obeys the user, never the cable: it suggests a charge limit in `wattwarden
+health`, but only applies one when you set it.
 
 ---
 

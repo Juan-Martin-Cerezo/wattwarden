@@ -14,7 +14,7 @@
 use crate::linux::sysfs::SysfsRoot;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use wattwarden_core::{PowerSource, Result};
+use wattwarden_core::{BatteryHealth, HealthUnit, PowerSource, Result};
 
 const POWER_SUPPLY_BASE: &str = "sys/class/power_supply";
 const DEFAULT_BATTERY: &str = "BAT0";
@@ -239,6 +239,73 @@ impl PowerSource for LinuxBattery {
     fn is_stationary(&self) -> bool {
         !self.discovered
     }
+
+    /// Ageing snapshot: capacity pair (`charge_*` µAh -> `energy_*` µWh -> uevent),
+    /// cycles, pack temperature (deci-°C) and identity strings. Missing leaves stay
+    /// `None` — the module never invents a value the hardware did not expose.
+    fn health(&self) -> Result<BatteryHealth> {
+        let mut health = BatteryHealth {
+            present: self.discovered,
+            ..Default::default()
+        };
+        if !self.discovered {
+            return Ok(health);
+        }
+
+        let charge_full = self.root.read_u64(&self.bat("charge_full"));
+        let charge_design = self.root.read_u64(&self.bat("charge_full_design"));
+        let energy_full = self.root.read_u64(&self.bat("energy_full"));
+        let energy_design = self.root.read_u64(&self.bat("energy_full_design"));
+
+        if charge_full.is_some() || charge_design.is_some() {
+            health.full = charge_full;
+            health.design = charge_design;
+            health.unit = Some(HealthUnit::ChargeUah);
+        } else if energy_full.is_some() || energy_design.is_some() {
+            health.full = energy_full;
+            health.design = energy_design;
+            health.unit = Some(HealthUnit::EnergyUwh);
+        } else {
+            let uevent = self.parse_uevent();
+            let u_full = Self::uevent_get(&uevent, "POWER_SUPPLY_CHARGE_FULL");
+            let u_design = Self::uevent_get(&uevent, "POWER_SUPPLY_CHARGE_FULL_DESIGN");
+            let e_full = Self::uevent_get(&uevent, "POWER_SUPPLY_ENERGY_FULL");
+            let e_design = Self::uevent_get(&uevent, "POWER_SUPPLY_ENERGY_FULL_DESIGN");
+            if !u_full.is_empty() || !u_design.is_empty() {
+                health.full = u_full.parse().ok();
+                health.design = u_design.parse().ok();
+                health.unit = Some(HealthUnit::ChargeUah);
+            } else if !e_full.is_empty() || !e_design.is_empty() {
+                health.full = e_full.parse().ok();
+                health.design = e_design.parse().ok();
+                health.unit = Some(HealthUnit::EnergyUwh);
+            }
+        }
+
+        health.cycle_count = self
+            .root
+            .read_u64(&self.bat("cycle_count"))
+            .and_then(|v| u32::try_from(v).ok());
+        health.temp_c = self
+            .root
+            .read_i64(&self.bat("temp"))
+            .map(|t| t as f64 / 10.0);
+
+        let model = self.root.read(&self.bat("model_name"));
+        if !model.is_empty() {
+            health.model = Some(model);
+        }
+        let manufacturer = self.root.read(&self.bat("manufacturer"));
+        if !manufacturer.is_empty() {
+            health.manufacturer = Some(manufacturer);
+        }
+        let serial = self.root.read(&self.bat("serial_number"));
+        if !serial.is_empty() {
+            health.serial = Some(serial);
+        }
+
+        Ok(health)
+    }
 }
 
 #[cfg(test)]
@@ -426,5 +493,111 @@ mod tests {
         assert!(bat.has_battery());
         assert_eq!(bat.battery_percentage().unwrap(), 42);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The real Vostro 5471 pack: 2068000 / 3684000 µAh -> 56.1%.
+    #[test]
+    fn health_reports_vostro_pack() {
+        let root = root("healthvostro");
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/charge_full"),
+            "2068000\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/charge_full_design"),
+            "3684000\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/model_name"),
+            "DELL FC92NFB\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/manufacturer"),
+            "Samsung SDI\n",
+        )
+        .unwrap();
+        fs::write(root.path("sys/class/power_supply/BAT0/cycle_count"), "0\n").unwrap();
+        fs::write(root.path("sys/class/power_supply/BAT0/temp"), "385\n").unwrap();
+
+        let bat = LinuxBattery::with_root(root);
+        let health = bat.health().unwrap();
+        assert!(health.present);
+        assert_eq!(health.unit, Some(HealthUnit::ChargeUah));
+        assert_eq!(health.health_pct(), Some(56.1));
+        assert_eq!(health.cycle_count, Some(0));
+        assert_eq!(health.temp_c, Some(38.5));
+        assert_eq!(health.model.as_deref(), Some("DELL FC92NFB"));
+        assert_eq!(health.manufacturer.as_deref(), Some("Samsung SDI"));
+        assert_eq!(health.serial, None);
+        assert_eq!(
+            health.unit.unwrap().scale_to_display(health.full.unwrap()),
+            2068
+        );
+    }
+
+    #[test]
+    fn health_falls_back_to_energy_pair() {
+        let root = root("healthenergy");
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/energy_full"),
+            "40000000\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/energy_full_design"),
+            "50000000\n",
+        )
+        .unwrap();
+
+        let bat = LinuxBattery::with_root(root);
+        let health = bat.health().unwrap();
+        assert_eq!(health.unit, Some(HealthUnit::EnergyUwh));
+        assert_eq!(health.health_pct(), Some(80.0));
+        assert_eq!(health.unit.unwrap().display_label(), "mWh");
+    }
+
+    #[test]
+    fn health_falls_back_to_uevent() {
+        let root = root("healthuevent");
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/uevent"),
+            "POWER_SUPPLY_NAME=BAT0\nPOWER_SUPPLY_CHARGE_FULL=1500000\nPOWER_SUPPLY_CHARGE_FULL_DESIGN=3000000\n",
+        )
+        .unwrap();
+
+        let bat = LinuxBattery::with_root(root);
+        let health = bat.health().unwrap();
+        assert_eq!(health.unit, Some(HealthUnit::ChargeUah));
+        assert_eq!(health.health_pct(), Some(50.0));
+    }
+
+    #[test]
+    fn health_is_absent_without_battery() {
+        let root = root("healthnobat");
+        let bat = LinuxBattery::with_root(SysfsRoot::new(root.path("nowhere")));
+        let health = bat.health().unwrap();
+        assert!(!health.present);
+        assert_eq!(health.health_pct(), None);
+    }
+
+    /// A partial pair (no `*_design`) must degrade to `health_pct: None`, never a guess.
+    #[test]
+    fn health_without_design_pair_reports_no_pct() {
+        let root = root("healthnodesign");
+        fs::write(
+            root.path("sys/class/power_supply/BAT0/charge_full"),
+            "2068000\n",
+        )
+        .unwrap();
+
+        let bat = LinuxBattery::with_root(root);
+        let health = bat.health().unwrap();
+        assert!(health.present);
+        assert_eq!(health.full, Some(2_068_000));
+        assert_eq!(health.design, None);
+        assert_eq!(health.health_pct(), None);
     }
 }

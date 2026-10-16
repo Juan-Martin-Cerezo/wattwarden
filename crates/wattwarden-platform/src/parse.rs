@@ -3,12 +3,12 @@
 //! Keeping them free of any platform `cfg` is what makes the assertions runnable on
 //! this Linux host — the command plumbing lives in [`crate::exec`] and is mocked per-platform.
 
-/// Parses the first floating point number following a given label token, else returns `0.0`.
-fn mac_number_after(out: &str, label: &str) -> f64 {
+use wattwarden_core::{BatteryHealth, HealthUnit};
+
+/// Parses the first floating point number following a given label token, if any.
+fn mac_number_opt(out: &str, label: &str) -> Option<f64> {
     let bytes = out.as_bytes();
-    let Some(idx) = out.find(label) else {
-        return 0.0;
-    };
+    let idx = out.find(label)?;
     let mut j = idx + label.len();
     let sep_start = j;
     while j < bytes.len() && (bytes[j] == b':' || bytes[j] == b' ') {
@@ -16,7 +16,7 @@ fn mac_number_after(out: &str, label: &str) -> f64 {
     }
     // Requires at least one ':' or space between label and number.
     if j == sep_start {
-        return 0.0;
+        return None;
     }
     let num_start = j;
     if j < bytes.len() && bytes[j] == b'-' {
@@ -27,7 +27,7 @@ fn mac_number_after(out: &str, label: &str) -> f64 {
         j += 1;
     }
     if j == digits_start {
-        return 0.0;
+        return None;
     }
     if j < bytes.len() && bytes[j] == b'.' {
         let dot = j;
@@ -41,7 +41,26 @@ fn mac_number_after(out: &str, label: &str) -> f64 {
             j = dot;
         }
     }
-    out[num_start..j].parse::<f64>().unwrap_or(0.0)
+    out[num_start..j].parse::<f64>().ok()
+}
+
+/// Parses the first floating point number following a given label token, else returns `0.0`.
+fn mac_number_after(out: &str, label: &str) -> f64 {
+    mac_number_opt(out, label).unwrap_or(0.0)
+}
+
+/// Parses the quoted string value following a label token (ioreg `"Key" = "value"`).
+fn mac_string_after(out: &str, label: &str) -> Option<String> {
+    let idx = out.find(label)?;
+    let rest = &out[idx + label.len()..];
+    let start = rest.find('"')? + 1;
+    let end = start + rest[start..].find('"')?;
+    let value = &rest[start..end];
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 /// Parses battery percentage from `pmset` output: the digits right before the first
@@ -109,6 +128,45 @@ pub fn mac_power_watts(ioreg_output: &str) -> f64 {
         return 0.0;
     }
     current * voltage / 1_000_000.0
+}
+
+/// Parses `ioreg -rn AppleSmartBattery` into a battery ageing snapshot.
+///
+/// Capacities are reported in mAh and normalised to µAh (`HealthUnit::ChargeUah`),
+/// the pack temperature in m°C to °C. A missing firmware key stays `None` — the
+/// parser never invents a metric the hardware does not expose. `AppleRawMaxCapacity`
+/// is the gauge's learned full capacity; the legacy `MaxCapacity` is the fallback.
+pub fn mac_health(ioreg_output: &str) -> BatteryHealth {
+    let micro = |key: &str| {
+        mac_number_opt(ioreg_output, key)
+            .filter(|v| *v > 0.0)
+            .map(|v| (v as u64) * 1000)
+    };
+    let full = micro("\"AppleRawMaxCapacity\" =").or_else(|| micro("\"MaxCapacity\" ="));
+    let design = micro("\"DesignCapacity\" =");
+
+    let mut health = BatteryHealth {
+        present: full.is_some() || design.is_some(),
+        full,
+        design,
+        unit: if full.is_some() || design.is_some() {
+            Some(HealthUnit::ChargeUah)
+        } else {
+            None
+        },
+        // CycleCount is legitimately 0 on a fresh pack, so key presence (not a
+        // non-zero value) decides whether the metric exists.
+        cycle_count: ioreg_output
+            .contains("\"CycleCount\" =")
+            .then(|| mac_number_after(ioreg_output, "\"CycleCount\" =") as u32),
+        // Apple reports the pack temperature in m°C.
+        temp_c: mac_number_opt(ioreg_output, "\"Temperature\" =").map(|t| t / 100.0),
+        model: mac_string_after(ioreg_output, "\"DeviceName\" ="),
+        manufacturer: None,
+        serial: mac_string_after(ioreg_output, "\"BatterySerialNumber\" ="),
+    };
+    health.present = health.present || health.cycle_count.is_some();
+    health
 }
 
 /// Parses LCD brightness percentage: `brightness[ =]+([0-9.]+)` × 100,
@@ -218,5 +276,65 @@ mod tests {
             mac_wifi_device("Hardware Port: Ethernet\nDevice: en0\n"),
             "en0"
         );
+    }
+
+    const MAC_IOREG: &str = r#"
++-o AppleSmartBattery  <class AppleSmartBattery, id 0x10000023d>
+  {
+    "AppleRawMaxCapacity" = 4200
+    "DesignCapacity" = 5000
+    "CycleCount" = 120
+    "Temperature" = 2980
+    "DeviceName" = "bq20z451"
+    "BatterySerialNumber" = "C123456789"
+    "Voltage" = 12345
+    "Current" = -1000
+  }
+"#;
+
+    #[test]
+    fn mac_health_parses_smart_battery_ioreg() {
+        let h = mac_health(MAC_IOREG);
+        assert!(h.present);
+        assert_eq!(h.unit, Some(HealthUnit::ChargeUah));
+        // 4200 / 5000 mAh -> 84.0%, normalised to µAh.
+        assert_eq!(h.health_pct(), Some(84.0));
+        assert_eq!(h.full, Some(4_200_000));
+        assert_eq!(h.design, Some(5_000_000));
+        assert_eq!(h.cycle_count, Some(120));
+        // 2980 m°C -> 29.8 °C.
+        assert_eq!(h.temp_c, Some(29.8));
+        assert_eq!(h.model.as_deref(), Some("bq20z451"));
+        assert_eq!(h.serial.as_deref(), Some("C123456789"));
+    }
+
+    /// Without `AppleRawMaxCapacity` the legacy `MaxCapacity` key is used.
+    #[test]
+    fn mac_health_falls_back_to_max_capacity() {
+        let ioreg = "\"MaxCapacity\" = 3900\n\"DesignCapacity\" = 5000\n";
+        let h = mac_health(ioreg);
+        assert_eq!(h.full, Some(3_900_000));
+        assert_eq!(h.health_pct(), Some(78.0));
+    }
+
+    /// A fresh pack reports `CycleCount = 0`: key presence decides, not the value.
+    #[test]
+    fn mac_health_keeps_zero_cycle_count() {
+        let h = mac_health("\"CycleCount\" = 0\n\"DesignCapacity\" = 5000\n");
+        assert!(h.present);
+        assert_eq!(h.cycle_count, Some(0));
+    }
+
+    /// Desktop Macs (or a failed `ioreg`) produce no battery node: absent, never a guess.
+    #[test]
+    fn mac_health_empty_output_is_absent() {
+        let h = mac_health("");
+        assert!(!h.present);
+        assert_eq!(h.health_pct(), None);
+        assert_eq!(h.cycle_count, None);
+
+        let no_batt = mac_health("+-o AppleACPIPlatformExpert  <class IOPlatformExpertDevice>\n");
+        assert!(!no_batt.present);
+        assert_eq!(no_batt.health_pct(), None);
     }
 }

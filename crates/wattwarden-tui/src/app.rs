@@ -28,6 +28,8 @@ pub enum ActionItem {
     AutoExtremeLevel,
     AutoBrightness,
     ProfileRestore,
+    HealthLine,
+    ChargeLimit,
     Cores,
     FreqLimit,
     GpuFreq,
@@ -63,6 +65,7 @@ impl ActionItem {
                 | ActionItem::RaplPl1
                 | ActionItem::RaplPl2
                 | ActionItem::Turbo
+                | ActionItem::ChargeLimit
                 | ActionItem::KbdBacklight
                 | ActionItem::Bluetooth
                 | ActionItem::WifiEnable
@@ -96,6 +99,30 @@ pub fn format_duration(d: Duration) -> String {
     format!("{secs}s")
 }
 
+/// Charge ceiling cycle for the TUI: OFF -> 55..=100 (step 5) -> OFF.
+pub fn next_charge_limit(current: Option<u8>, forward: bool) -> Option<u8> {
+    const STEPS: [Option<u8>; 11] = [
+        None,
+        Some(55),
+        Some(60),
+        Some(65),
+        Some(70),
+        Some(75),
+        Some(80),
+        Some(85),
+        Some(90),
+        Some(95),
+        Some(100),
+    ];
+    let idx = STEPS.iter().position(|v| *v == current).unwrap_or(0);
+    let next = if forward {
+        (idx + 1) % STEPS.len()
+    } else {
+        (idx + STEPS.len() - 1) % STEPS.len()
+    };
+    STEPS[next]
+}
+
 /// Builds the menu layout dynamically based on the detected operating system name.
 fn build_menu(os_name: &str) -> Vec<ActionItem> {
     let mut items = vec![
@@ -106,6 +133,10 @@ fn build_menu(os_name: &str) -> Vec<ActionItem> {
         ActionItem::AutoExtremeLevel,
         ActionItem::AutoBrightness,
         ActionItem::ProfileRestore,
+        ActionItem::Header(String::new()),
+        ActionItem::Header("─── [ BATTERY ] ───────────────────────".into()),
+        ActionItem::HealthLine,
+        ActionItem::ChargeLimit,
         ActionItem::Header(String::new()),
     ];
 
@@ -421,6 +452,15 @@ impl App {
             ActionItem::ProfileRestore => {
                 self.restore("RESTORE MODE ACTIVATED");
             }
+            ActionItem::ChargeLimit => {
+                self.stop_daemon();
+                let next = if self.config.battery_charge_limit.is_some() {
+                    None
+                } else {
+                    Some(80)
+                };
+                self.set_charge_limit(next);
+            }
             ActionItem::ProcessPurge => {
                 let _ = self.backend.tweaks.process_purge();
                 self.set_toast("PROCESSES PURGED");
@@ -438,6 +478,30 @@ impl App {
     fn write_vm_writeback_centisecs(&self, value: i64) {
         let clamped = value.clamp(VM_WRITEBACK_MIN_CENTISECS, VM_WRITEBACK_MAX_CENTISECS);
         let _ = self.backend.tweaks.set_vm_writeback_centisecs(clamped);
+    }
+
+    /// Persists and applies the charge ceiling. `None` only clears WattWarden's
+    /// setting without touching sysfs (the active threshold may come from the BIOS).
+    fn set_charge_limit(&mut self, limit: Option<u8>) {
+        self.config.battery_charge_limit = limit;
+        let _ = self.config.save(None);
+        match limit {
+            Some(n) => {
+                if self.backend.threshold.supports_threshold()
+                    && self.backend.threshold.set_charge_threshold(n).is_ok()
+                {
+                    self.set_toast(format!("CHARGE LIMIT: {n}%"));
+                } else {
+                    self.set_toast("CHARGE LIMIT: SAVED (threshold not exposed)");
+                }
+            }
+            None => self.set_toast("CHARGE LIMIT: OFF (threshold untouched)"),
+        }
+    }
+
+    fn cycle_charge_limit(&mut self, forward: bool) {
+        let next = next_charge_limit(self.config.battery_charge_limit, forward);
+        self.set_charge_limit(next);
     }
 
     fn toggle_boolean(&mut self, item: &ActionItem) {
@@ -608,6 +672,7 @@ impl App {
                 self.write_vm_writeback_centisecs(cur - 1);
                 self.set_toast(format!("VM WRITEBACK: {}", self.vm_writeback_centisecs()));
             }
+            ActionItem::ChargeLimit => self.cycle_charge_limit(false),
             // EPP and ASPM are read-only in the dashboard: never write hardware here.
             _ => {}
         }
@@ -695,6 +760,7 @@ impl App {
                 self.write_vm_writeback_centisecs(cur + 1);
                 self.set_toast(format!("VM WRITEBACK: {}", self.vm_writeback_centisecs()));
             }
+            ActionItem::ChargeLimit => self.cycle_charge_limit(true),
             _ => {}
         }
     }
@@ -734,6 +800,7 @@ mod tests {
             ActionItem::RaplPl1,
             ActionItem::RaplPl2,
             ActionItem::Turbo,
+            ActionItem::ChargeLimit,
             ActionItem::KbdBacklight,
             ActionItem::Bluetooth,
             ActionItem::WifiEnable,
@@ -753,6 +820,7 @@ mod tests {
         for item in [
             ActionItem::Brightness,
             ActionItem::AutoBrightness,
+            ActionItem::HealthLine,
             ActionItem::Epp,
             ActionItem::Aspm,
             ActionItem::ProcessPurge,
@@ -764,12 +832,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn charge_limit_cycle_is_off_and_55_to_100() {
+        // Forward: OFF -> 55 -> ... -> 100 -> OFF (wrap).
+        assert_eq!(next_charge_limit(None, true), Some(55));
+        assert_eq!(next_charge_limit(Some(55), true), Some(60));
+        assert_eq!(next_charge_limit(Some(100), true), None);
+        // Backward: OFF -> 100 -> 95 (wrap).
+        assert_eq!(next_charge_limit(None, false), Some(100));
+        assert_eq!(next_charge_limit(Some(100), false), Some(95));
+        // A value outside the cycle restarts from OFF.
+        assert_eq!(next_charge_limit(Some(72), true), Some(55));
+    }
+
     /// The dashboard shows a consistent row set per OS with the exact section headers.
     #[test]
     fn golden_menu_matches_per_os() {
         use ActionItem::*;
 
         let h_profiles = Header("─── [ PROFILES ] ───────────────────────".into());
+        let h_bat = Header("─── [ BATTERY ] ───────────────────────".into());
         let h_hw = Header("─── [ HARDWARE LIMITS ] ────────────────".into());
         let h_per = Header("─── [ PERIPHERALS ] ────────────────────".into());
         let h_per_net = Header("─── [ PERIPHERALS & NETWORKING ] ──────".into());
@@ -786,6 +868,10 @@ mod tests {
             AutoExtremeLevel,
             AutoBrightness,
             ProfileRestore,
+            blank.clone(),
+            h_bat,
+            HealthLine,
+            ChargeLimit,
             blank.clone(),
         ];
 

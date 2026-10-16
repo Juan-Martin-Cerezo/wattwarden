@@ -1,7 +1,10 @@
 use crate::pid::PidManager;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI16, Ordering};
+use std::sync::atomic::{AtomicI16, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
 use wattwarden_core::*;
@@ -80,11 +83,66 @@ async fn wait_for_shutdown() {
     }
 }
 
+/// Cadence of the opt-in battery health CSV samples (seconds).
+const HEALTH_LOG_INTERVAL_SECS: i64 = 3600;
+/// Minimum gap between battery temperature warnings (seconds).
+const TEMP_WARN_INTERVAL_SECS: i64 = 600;
+/// Append-only health history (CSV), written only when `battery_health_log` is set.
+const HEALTH_LOG_PATH: &str = "/var/log/wattwarden-health.log";
+
+/// Minimal ISO-8601 UTC formatter (civil-from-days), so the health log needs no
+/// date-time dependency.
+fn unix_to_iso_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}")
+}
+
+/// One CSV sample: `ts,health=..,full=..,design=..,cycles=..,capacity=..,charging=..,temp=..`.
+/// Missing metrics render as `na` — the log never invents a value.
+fn format_health_csv(ts: &str, h: &BatteryHealth, capacity: u8, charging: bool) -> String {
+    let or_na = |v: Option<String>| v.unwrap_or_else(|| "na".to_string());
+    format!(
+        "{ts},health={},full={},design={},cycles={},capacity={capacity},charging={charging},temp={}",
+        or_na(h.health_pct().map(|p| p.to_string())),
+        or_na(h.full.map(|v| v.to_string())),
+        or_na(h.design.map(|v| v.to_string())),
+        or_na(h.cycle_count.map(|v| v.to_string())),
+        or_na(h.temp_c.map(|t| format!("{t:.1}"))),
+    )
+}
+
+/// Warn condition: pack over the user-set limit while charging. Disabled unless the
+/// user configured `battery_temp_warn_c` (opt-in; never a hardcoded temperature).
+fn temp_exceeds_limit(temp_c: Option<f64>, limit_c: Option<u8>, charging: bool) -> bool {
+    charging && matches!((temp_c, limit_c), (Some(t), Some(l)) if t > f64::from(l))
+}
+
+fn append_line(path: &str, line: &str) -> std::io::Result<()> {
+    let mut f = OpenOptions::new().create(true).append(true).open(path)?;
+    f.write_all(line.as_bytes())?;
+    f.write_all(b"\n")
+}
+
 pub struct DaemonRunner {
     backend: Arc<PlatformBackend>,
     config_path: Option<PathBuf>,
     pid_mgr: PidManager,
     last_applied_brightness: Arc<AtomicI16>,
+    /// Epoch seconds of the last health CSV sample (0 = never).
+    last_health_log: Arc<AtomicI64>,
+    /// Epoch seconds of the last battery temperature warning (0 = never).
+    last_temp_warn: Arc<AtomicI64>,
 }
 
 impl DaemonRunner {
@@ -95,6 +153,8 @@ impl DaemonRunner {
             config_path: None,
             pid_mgr: PidManager::new(),
             last_applied_brightness: Arc::new(AtomicI16::new(-1)),
+            last_health_log: Arc::new(AtomicI64::new(0)),
+            last_temp_warn: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -112,6 +172,8 @@ impl DaemonRunner {
             config_path,
             pid_mgr,
             last_applied_brightness: Arc::new(AtomicI16::new(-1)),
+            last_health_log: Arc::new(AtomicI64::new(0)),
+            last_temp_warn: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -377,6 +439,47 @@ impl DaemonRunner {
         }
     }
 
+    /// Opt-in battery telemetry. With `battery_health_log` and `battery_temp_warn_c`
+    /// both off this reads nothing and writes nothing (pure opt-in).
+    pub fn maybe_sample_health(&self) {
+        let config = self.config();
+        if !config.battery_health_log && config.battery_temp_warn_c.is_none() {
+            return;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let health = self.backend.battery.health().unwrap_or_default();
+        let charging = self.backend.battery.is_charging().unwrap_or(false);
+
+        if config.battery_health_log {
+            let last = self.last_health_log.load(Ordering::Relaxed);
+            if last == 0 || now - last >= HEALTH_LOG_INTERVAL_SECS {
+                self.last_health_log.store(now, Ordering::Relaxed);
+                let capacity = self.backend.battery.battery_percentage().unwrap_or(0);
+                let line = format_health_csv(&unix_to_iso_utc(now), &health, capacity, charging);
+                match append_line(HEALTH_LOG_PATH, &line) {
+                    Ok(()) => info!("Battery health sample: {line}"),
+                    Err(e) => warn!("Failed to append battery health sample: {e}"),
+                }
+            }
+        }
+
+        if temp_exceeds_limit(health.temp_c, config.battery_temp_warn_c, charging) {
+            let last = self.last_temp_warn.load(Ordering::Relaxed);
+            if last == 0 || now - last >= TEMP_WARN_INTERVAL_SECS {
+                self.last_temp_warn.store(now, Ordering::Relaxed);
+                warn!(
+                    "Battery {}°C over the {}°C limit while charging — consider unplugging or reducing load.",
+                    health.temp_c.map(|t| format!("{t:.1}")).unwrap_or_else(|| "na".into()),
+                    config.battery_temp_warn_c.map(|l| l.to_string()).unwrap_or_else(|| "na".into()),
+                );
+            }
+        }
+    }
+
     pub async fn run(self) -> Result<()> {
         self.pid_mgr.acquire()?;
         info!(
@@ -414,6 +517,7 @@ impl DaemonRunner {
         // Run initial logic pass immediately before starting periodic loop
         self.apply_logic();
         self.apply_brightness();
+        self.maybe_sample_health();
 
         let mut logic_ticker = interval(Duration::from_secs(5));
         let mut brightness_ticker = interval(Duration::from_millis(300));
@@ -432,6 +536,7 @@ impl DaemonRunner {
                 }
                 _ = logic_ticker.tick() => {
                     self.apply_logic();
+                    self.maybe_sample_health();
                 }
                 _ = brightness_ticker.tick() => {
                     self.apply_brightness();
@@ -2127,5 +2232,60 @@ mod non_linux_tests {
         assert_eq!(res.target_gpu, 0);
         assert_eq!(res.target_rapl, 0);
         assert_eq!(runner.apply_brightness_step(Some("firefox")), None);
+    }
+}
+
+/// Pure helpers of the opt-in battery telemetry (no clock, no hardware).
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn unix_to_iso_utc_known_vectors() {
+        assert_eq!(unix_to_iso_utc(0), "1970-01-01T00:00:00");
+        assert_eq!(unix_to_iso_utc(1_792_159_200), "2026-10-16T14:00:00");
+        // Leap-day and year rollover.
+        assert_eq!(unix_to_iso_utc(1_709_164_800), "2024-02-29T00:00:00");
+        assert_eq!(unix_to_iso_utc(1_767_225_599), "2025-12-31T23:59:59");
+    }
+
+    #[test]
+    fn health_csv_renders_vostro_sample() {
+        let h = BatteryHealth {
+            present: true,
+            full: Some(2_068_000),
+            design: Some(3_684_000),
+            unit: Some(HealthUnit::ChargeUah),
+            cycle_count: Some(0),
+            temp_c: Some(38.5),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_health_csv("2026-10-16T14:00:00", &h, 75, true),
+            "2026-10-16T14:00:00,health=56.1,full=2068000,design=3684000,cycles=0,capacity=75,charging=true,temp=38.5"
+        );
+    }
+
+    #[test]
+    fn health_csv_renders_missing_metrics_as_na() {
+        let h = BatteryHealth::default();
+        assert_eq!(
+            format_health_csv("2026-10-16T14:00:00", &h, 0, false),
+            "2026-10-16T14:00:00,health=na,full=na,design=na,cycles=na,capacity=0,charging=false,temp=na"
+        );
+    }
+
+    #[test]
+    fn temp_warn_requires_optin_heat_and_charging() {
+        // Opt-in: no limit configured, no warning ever.
+        assert!(!temp_exceeds_limit(Some(55.0), None, true));
+        // Not charging: heat alone never warns (obey the user, not the cable).
+        assert!(!temp_exceeds_limit(Some(55.0), Some(45), false));
+        // Under the limit while charging: silent.
+        assert!(!temp_exceeds_limit(Some(44.9), Some(45), true));
+        // Missing telemetry: silent, never a guess.
+        assert!(!temp_exceeds_limit(None, Some(45), true));
+        // Over the limit while charging: warn.
+        assert!(temp_exceeds_limit(Some(45.1), Some(45), true));
     }
 }

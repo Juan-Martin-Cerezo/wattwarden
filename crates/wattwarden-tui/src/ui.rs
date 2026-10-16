@@ -334,6 +334,23 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
             app.config.auto_brightness,
         ),
         ActionItem::ProfileRestore => ("♻  Restore Mode", "[EXECUTE]".into(), false),
+        ActionItem::HealthLine => {
+            let h = app.backend.battery.health().unwrap_or_default();
+            let val = match (h.health_pct(), h.cycle_count) {
+                (Some(pct), Some(c)) => format!("[{pct}% / {c} cyc]"),
+                (Some(pct), None) => format!("[{pct}%]"),
+                _ => "[N/A]".into(),
+            };
+            ("Battery Health", val, false)
+        }
+        ActionItem::ChargeLimit => (
+            "Charge Limit",
+            match app.config.battery_charge_limit {
+                Some(limit) => format!("[{limit}%]"),
+                None => "[OFF]".into(),
+            },
+            app.config.battery_charge_limit.is_some(),
+        ),
         ActionItem::Cores => {
             let online = app.backend.cpu.online_cores().unwrap_or(1);
             let total = app.backend.cpu.num_cpus();

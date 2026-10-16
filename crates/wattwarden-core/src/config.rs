@@ -154,6 +154,13 @@ pub struct Config {
     pub profile: Option<PowerProfile>,
     #[serde(default)]
     pub battery_charge_limit: Option<u8>,
+    /// Opt-in: append a battery health sample (CSV) to the health log every hour.
+    #[serde(default)]
+    pub battery_health_log: bool,
+    /// Opt-in: warn (log only) when the pack exceeds this °C while charging.
+    /// `None` = disabled, never a default temperature.
+    #[serde(default)]
+    pub battery_temp_warn_c: Option<u8>,
     #[serde(default = "default_terminal_brightness")]
     pub terminal_brightness: u8,
     #[serde(default = "default_gui_brightness")]
@@ -168,6 +175,8 @@ impl Default for Config {
             auto_brightness: false,
             profile: None,
             battery_charge_limit: None,
+            battery_health_log: false,
+            battery_temp_warn_c: None,
             terminal_brightness: 25,
             gui_brightness: 65,
         }
@@ -369,6 +378,34 @@ mod tests {
 
         let loaded = Config::load_or_default(Some(&cfg_path));
         assert_eq!(loaded.auto_extreme_level, AutoExtremeLevel::Low);
+
+        let _ = std::fs::remove_dir_all(tmp_dir);
+    }
+
+    /// Opt-in puro: el historial de salud y el aviso de temperatura arrancan apagados.
+    #[test]
+    fn test_battery_health_fields_default_off() {
+        let empty: Config = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(!empty.battery_health_log);
+        assert_eq!(empty.battery_temp_warn_c, None);
+        assert_eq!(Config::default().battery_temp_warn_c, None);
+    }
+
+    #[test]
+    fn test_battery_health_fields_round_trip() {
+        let tmp_dir = std::env::temp_dir().join(format!("ww_test_health_{}", std::process::id()));
+        let cfg_path = tmp_dir.join("health_config.json");
+
+        let cfg = Config {
+            battery_health_log: true,
+            battery_temp_warn_c: Some(45),
+            ..Default::default()
+        };
+        cfg.save(Some(&cfg_path)).expect("save should succeed");
+
+        let loaded = Config::load_or_default(Some(&cfg_path));
+        assert!(loaded.battery_health_log);
+        assert_eq!(loaded.battery_temp_warn_c, Some(45));
 
         let _ = std::fs::remove_dir_all(tmp_dir);
     }

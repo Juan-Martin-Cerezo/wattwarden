@@ -45,6 +45,13 @@ impl PowerSource for MacOsBattery {
         let out = exec::run_capture("pmset", &["-g", "batt"]);
         !out.contains("InternalBattery")
     }
+
+    /// Ageing snapshot via `ioreg -rn AppleSmartBattery` (mAh/m°C normalised to
+    /// µAh/°C). Firmware keys the Mac does not expose stay `None`.
+    fn health(&self) -> Result<BatteryHealth> {
+        let out = exec::run_capture("ioreg", &["-rn", "AppleSmartBattery"]);
+        Ok(parse::mac_health(&out))
+    }
 }
 
 pub struct MacOsCpu;
