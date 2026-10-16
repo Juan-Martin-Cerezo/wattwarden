@@ -1,17 +1,17 @@
+mod calibrate;
 mod cli;
 mod privilege;
 mod service;
 
 use cli::{run, CliRuntime};
 use std::io::Write;
-#[cfg(target_os = "linux")]
 use std::path::Path;
 // Only Linux (systemd) shells out from the CLI; macOS drives
 // everything through its backend.
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
-use wattwarden_core::Config;
+use wattwarden_core::{ChargeThreshold, Config, PowerSource};
 use wattwarden_daemon::{spawn, DaemonRunner, PidManager};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 use wattwarden_tui::{run_tui, App};
@@ -206,6 +206,56 @@ impl CliRuntime for RealRuntime {
     }
     fn launch_dashboard(&self) -> Result<(), String> {
         launch_dashboard()
+    }
+    fn health_report(&self) -> Result<cli::HealthReport, String> {
+        let backend = build_backend()?;
+        let config = Config::load_or_default(None);
+        let battery = &backend.battery;
+        let health = battery.health().unwrap_or_default();
+        let active_threshold = if backend.threshold.supports_threshold() {
+            backend.threshold.charge_threshold().ok()
+        } else {
+            None
+        };
+        Ok(cli::HealthReport {
+            present: health.present || !battery.is_stationary(),
+            health,
+            capacity: battery.battery_percentage().unwrap_or(0),
+            charging: battery.is_charging().unwrap_or(false),
+            configured_limit: config.battery_charge_limit,
+            active_threshold,
+            time_remaining: battery
+                .time_remaining()
+                .unwrap_or_else(|_| "Calculating...".to_string()),
+        })
+    }
+    fn set_charge_limit(&self, limit: Option<u8>) -> Result<(), String> {
+        let mut cfg = Config::load_or_default(None);
+        cfg.battery_charge_limit = limit;
+        cfg.save(None).map_err(|e| e.to_string())?;
+        if let Some(n) = limit {
+            let backend = build_backend()?;
+            if !backend.threshold.supports_threshold() {
+                return Err("hardware does not expose a charge threshold".to_string());
+            }
+            backend
+                .threshold
+                .set_charge_threshold(n)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    fn calibrate_start(&self) -> Result<String, String> {
+        let backend = build_backend()?;
+        calibrate::start(&backend.threshold, Path::new(calibrate::STATE_PATH))
+    }
+    fn calibrate_status(&self) -> Result<String, String> {
+        let backend = build_backend()?;
+        calibrate::status(&backend.battery, Path::new(calibrate::STATE_PATH))
+    }
+    fn calibrate_finish(&self) -> Result<String, String> {
+        let backend = build_backend()?;
+        calibrate::finish(&backend.threshold, Path::new(calibrate::STATE_PATH))
     }
 }
 

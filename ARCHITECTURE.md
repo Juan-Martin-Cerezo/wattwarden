@@ -31,7 +31,7 @@ wattwarden/
 
 ### 1. Hardware Abstraction Layer (`wattwarden-core`)
 Defines the unified hardware interfaces and capabilities:
-- **`PowerSource`**: Battery capacity, discharge wattage, AC connection status, and stationary mains fallback.
+- **`PowerSource`**: Battery capacity, discharge wattage, AC connection status, stationary mains fallback, and an ageing snapshot (`battery_health.rs`: full vs design capacity, cycle count, pack temperature).
 - **`CpuGovernor`**: Number of CPUs, online core scaling, frequency limits, turbo boost, and Energy Performance Preference (EPP).
 - **`RaplController`**: Intel/AMD Running Average Power Limit (PL1 long-term and PL2 short-term package wattage).
 - **`GpuController`**: Integrated and discrete GPU frequency ceilings across Intel, AMD, and NVIDIA.
@@ -51,6 +51,7 @@ Defines the unified hardware interfaces and capabilities:
   1. Netlink kernel event listener.
   2. Wayland compositor window focus socket reader.
   3. Maintenance timer tick (10s interval) for dynamic profile persistence and dynamic auto-brightness adjustments.
+- Opt-in battery telemetry: hourly CSV health samples (`battery_health_log`) appended to `/var/log/wattwarden-health.log`, and a rate-limited warning when the pack exceeds `battery_temp_warn_c` while charging. Both disabled by default — with no user setting the daemon reads and writes nothing.
 
 ### 4. Zero-GC Terminal Interface (`wattwarden-tui`)
 - Implemented with `ratatui` and `crossterm`.

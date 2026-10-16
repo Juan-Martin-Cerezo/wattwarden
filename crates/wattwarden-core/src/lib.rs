@@ -1,8 +1,10 @@
+pub mod battery_health;
 pub mod config;
 pub mod error;
 pub mod traits;
 pub mod typestate;
 
+pub use battery_health::{BatteryHealth, HealthUnit};
 pub use config::{AutoExtremeLevel, Config, LevelParams, PowerProfile};
 pub use error::{Result, WattWardenError};
 pub use traits::*;

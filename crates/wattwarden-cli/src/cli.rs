@@ -7,6 +7,21 @@
 //! contract can be unit-tested without root, hardware, systemd, or a terminal.
 
 use std::io::Write;
+use wattwarden_core::BatteryHealth;
+
+/// Battery facts the CLI needs to render `--health` and the `--status` battery line.
+#[derive(Debug, Clone, Default)]
+pub struct HealthReport {
+    pub present: bool,
+    pub health: BatteryHealth,
+    pub capacity: u8,
+    pub charging: bool,
+    /// `Config.battery_charge_limit` (opt-in; `None` = WattWarden sets no ceiling).
+    pub configured_limit: Option<u8>,
+    /// Threshold actually active in sysfs (may come from the BIOS or another tool).
+    pub active_threshold: Option<u8>,
+    pub time_remaining: String,
+}
 
 /// Side effects the dispatcher needs. The production implementation talks to the
 /// real platform/daemon/TUI; tests use an in-memory fake.
@@ -29,6 +44,15 @@ pub trait CliRuntime {
     fn run_daemon(&self) -> Result<(), String>;
     /// Launches the interactive dashboard.
     fn launch_dashboard(&self) -> Result<(), String>;
+    /// Battery facts for `--health` / `--status` (read-only).
+    fn health_report(&self) -> Result<HealthReport, String>;
+    /// Persist `battery_charge_limit`; `Some(n)` also applies the hardware ceiling,
+    /// `None` only clears WattWarden's setting (never touches sysfs).
+    fn set_charge_limit(&self, limit: Option<u8>) -> Result<(), String>;
+    /// Guided gauge recalibration (see `calibrate.rs`).
+    fn calibrate_start(&self) -> Result<String, String>;
+    fn calibrate_status(&self) -> Result<String, String>;
+    fn calibrate_finish(&self) -> Result<String, String>;
 }
 
 /// Standard command usage and help output.
@@ -71,6 +95,105 @@ pub fn print_help(out: &mut dyn Write) {
         out,
         "  sudo wattwarden --uninstall-service Remove system service"
     );
+    let _ = writeln!(
+        out,
+        "  sudo wattwarden --health          Show battery health, charge limit and suggestions"
+    );
+    let _ = writeln!(
+        out,
+        "  sudo wattwarden --charge-limit <55-100|off> Set or clear the battery charge ceiling"
+    );
+    let _ = writeln!(
+        out,
+        "  sudo wattwarden --calibrate <start|status|done|abort> Recalibrate the battery gauge"
+    );
+}
+
+/// Renders the `--health` report. Pure: no hardware access, fully golden-testable.
+pub fn render_health(r: &HealthReport) -> String {
+    if !r.present {
+        return "No battery detected (stationary mains).".to_string();
+    }
+    let h = &r.health;
+    let device = match (&h.manufacturer, &h.model) {
+        (Some(mfr), Some(model)) => format!("{mfr} {model}"),
+        (None, Some(model)) => model.clone(),
+        (Some(mfr), None) => mfr.clone(),
+        (None, None) => "Unknown".to_string(),
+    };
+    let health_line = match (h.health_pct(), h.unit) {
+        (Some(pct), Some(unit)) => match (h.full, h.design) {
+            (Some(full), Some(design)) => format!(
+                "{pct}% ({}/{}) {}",
+                unit.scale_to_display(full),
+                unit.scale_to_display(design),
+                unit.display_label()
+            ),
+            _ => format!("{pct}%"),
+        },
+        _ => "not reported".to_string(),
+    };
+    let cycles = h
+        .cycle_count
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "not reported".to_string());
+    let temp = h
+        .temp_c
+        .map(|t| format!("{t:.1}°C"))
+        .unwrap_or_else(|| "not reported".to_string());
+    let state = if r.charging {
+        "Charging"
+    } else {
+        "Discharging"
+    };
+    let limit_line = match (r.configured_limit, r.active_threshold) {
+        (Some(c), Some(a)) => format!("configured {c}% (active threshold {a}%)"),
+        (Some(c), None) => format!("configured {c}% (threshold not exposed)"),
+        (None, Some(a)) => format!("not set (active threshold {a}%)"),
+        (None, None) => "not set".to_string(),
+    };
+
+    let mut lines = vec![
+        "Battery Health".to_string(),
+        format!("  {:<14}: {device}", "Device"),
+        format!("  {:<14}: {health_line}", "Health"),
+        format!("  {:<14}: {cycles}", "Cycles"),
+        format!("  {:<14}: {temp}", "Temperature"),
+        format!(
+            "  {:<14}: {capacity}% ({state})",
+            "Charge",
+            capacity = r.capacity
+        ),
+        format!("  {:<14}: {limit_line}", "Charge limit"),
+        format!("  {:<14}: {}", "Est. time", r.time_remaining),
+    ];
+    // Suggestion only: WattWarden obeys the user, never the cable — it never
+    // applies a ceiling by itself.
+    if r.configured_limit.is_none() {
+        lines.push(String::new());
+        lines.push(
+            "  Suggestion: sudo wattwarden charge-limit 80 — WattWarden never applies this by itself."
+                .to_string(),
+        );
+    }
+    lines.join("\n")
+}
+
+/// One-line battery summary for `--status`; `None` when no battery is present.
+pub fn render_status_battery(r: &HealthReport) -> Option<String> {
+    if !r.present {
+        return None;
+    }
+    let health = r
+        .health
+        .health_pct()
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "not reported".to_string());
+    let limit = r
+        .configured_limit
+        .map(|l| format!("{l}%"))
+        .unwrap_or_else(|| "not set".to_string());
+    Some(format!("Battery Health: {health} | Charge limit: {limit}"))
 }
 
 /// Runs the CLI and returns the process exit code. Primary subcommand is evaluated,
@@ -200,7 +323,130 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
                 } else {
                     let _ = writeln!(out, "WattWarden Daemon Status: [INACTIVE]");
                 }
+                if let Ok(report) = rt.health_report() {
+                    if let Some(line) = render_status_battery(&report) {
+                        let _ = writeln!(out, "{line}");
+                    }
+                }
                 return 0;
+            }
+
+            "--health" | "health" => {
+                match rt.health_report() {
+                    Ok(report) => {
+                        let _ = writeln!(out, "{}", render_health(&report));
+                    }
+                    Err(e) => {
+                        let _ = writeln!(out, "Error: {e}");
+                        return 1;
+                    }
+                }
+                return 0;
+            }
+
+            "--charge-limit" | "charge-limit" => {
+                if !rt.is_root() {
+                    let _ = writeln!(
+                        out,
+                        "Error: Administrator/root privileges are required to change the charge limit."
+                    );
+                    return 1;
+                }
+                match args.get(2).map(String::as_str) {
+                    Some("off") => {
+                        if let Err(e) = rt.set_charge_limit(None) {
+                            let _ = writeln!(out, "Error clearing charge limit: {e}");
+                            return 1;
+                        }
+                        let _ = writeln!(
+                            out,
+                            "Charge limit cleared. WattWarden will not touch the charge threshold."
+                        );
+                        if let Ok(report) = rt.health_report() {
+                            if let Some(a) = report.active_threshold {
+                                let _ = writeln!(
+                                    out,
+                                    "Active threshold remains: {a}% (set outside WattWarden)."
+                                );
+                            }
+                        }
+                        return 0;
+                    }
+                    Some(arg) => match arg.parse::<u8>() {
+                        Ok(n) if (55..=100).contains(&n) => {
+                            if let Err(e) = rt.set_charge_limit(Some(n)) {
+                                let _ = writeln!(out, "Error setting charge limit: {e}");
+                                return 1;
+                            }
+                            let _ = writeln!(out, "Charge limit set to: {n}%");
+                            return 0;
+                        }
+                        _ => {
+                            let _ = writeln!(
+                                out,
+                                "Error: charge limit must be a value between 55 and 100, or 'off'."
+                            );
+                            return 1;
+                        }
+                    },
+                    None => {
+                        return match rt.health_report() {
+                            Ok(report) => {
+                                let _ = writeln!(
+                                    out,
+                                    "Charge limit: {}",
+                                    match (report.configured_limit, report.active_threshold) {
+                                        (Some(c), Some(a)) => {
+                                            format!("configured {c}% (active threshold {a}%)")
+                                        }
+                                        (Some(c), None) => format!("configured {c}%"),
+                                        (None, Some(a)) => {
+                                            format!("not set (active threshold {a}%)")
+                                        }
+                                        (None, None) => "not set".to_string(),
+                                    }
+                                );
+                                0
+                            }
+                            Err(e) => {
+                                let _ = writeln!(out, "Error: {e}");
+                                1
+                            }
+                        };
+                    }
+                }
+            }
+
+            "--calibrate" | "calibrate" => {
+                if !rt.is_root() {
+                    let _ = writeln!(
+                        out,
+                        "Error: Administrator/root privileges are required to run calibration."
+                    );
+                    return 1;
+                }
+                let result = match args.get(2).map(String::as_str) {
+                    Some("start") | None => rt.calibrate_start(),
+                    Some("status") => rt.calibrate_status(),
+                    Some("done") | Some("abort") => rt.calibrate_finish(),
+                    Some(other) => {
+                        let _ = writeln!(
+                            out,
+                            "Error: unknown calibrate phase '{other}' (use start|status|done|abort)."
+                        );
+                        return 1;
+                    }
+                };
+                return match result {
+                    Ok(msg) => {
+                        let _ = writeln!(out, "{msg}");
+                        0
+                    }
+                    Err(e) => {
+                        let _ = writeln!(out, "Error: {e}");
+                        1
+                    }
+                };
             }
 
             "--brightness" => {
@@ -268,6 +514,8 @@ mod tests {
         root: bool,
         active: bool,
         auto_brightness: Cell<bool>,
+        report: HealthReport,
+        charge_limit: Cell<Option<u8>>,
     }
 
     impl FakeRuntime {
@@ -276,7 +524,14 @@ mod tests {
                 root,
                 active,
                 auto_brightness: Cell::new(auto_brightness),
+                report: HealthReport::default(),
+                charge_limit: Cell::new(None),
             }
+        }
+
+        fn with_report(mut self, report: HealthReport) -> Self {
+            self.report = report;
+            self
         }
     }
 
@@ -310,6 +565,22 @@ mod tests {
         fn launch_dashboard(&self) -> Result<(), String> {
             Ok(())
         }
+        fn health_report(&self) -> Result<HealthReport, String> {
+            Ok(self.report.clone())
+        }
+        fn set_charge_limit(&self, limit: Option<u8>) -> Result<(), String> {
+            self.charge_limit.set(limit);
+            Ok(())
+        }
+        fn calibrate_start(&self) -> Result<String, String> {
+            Ok("Calibration started (fake).".to_string())
+        }
+        fn calibrate_status(&self) -> Result<String, String> {
+            Ok("Calibration in progress (fake).".to_string())
+        }
+        fn calibrate_finish(&self) -> Result<String, String> {
+            Ok("Calibration finished (fake).".to_string())
+        }
     }
 
     fn run_args(args: &[&str], rt: &FakeRuntime) -> (i32, String) {
@@ -336,6 +607,9 @@ mod tests {
             "  sudo wattwarden --install-service Install & enable auto-start system service\n",
         );
         s.push_str("  sudo wattwarden --uninstall-service Remove system service\n");
+        s.push_str("  sudo wattwarden --health          Show battery health, charge limit and suggestions\n");
+        s.push_str("  sudo wattwarden --charge-limit <55-100|off> Set or clear the battery charge ceiling\n");
+        s.push_str("  sudo wattwarden --calibrate <start|status|done|abort> Recalibrate the battery gauge\n");
         s
     }
 
@@ -472,6 +746,21 @@ mod tests {
                 self.dashboard_launched.set(true);
                 Ok(())
             }
+            fn health_report(&self) -> Result<HealthReport, String> {
+                Ok(HealthReport::default())
+            }
+            fn set_charge_limit(&self, _limit: Option<u8>) -> Result<(), String> {
+                Ok(())
+            }
+            fn calibrate_start(&self) -> Result<String, String> {
+                Ok(String::new())
+            }
+            fn calibrate_status(&self) -> Result<String, String> {
+                Ok(String::new())
+            }
+            fn calibrate_finish(&self) -> Result<String, String> {
+                Ok(String::new())
+            }
         }
         for flag in ["--frobnicate", "--level", "profile", "bogus-flag-xyz"] {
             let rt = SpyRuntime {
@@ -541,5 +830,152 @@ mod tests {
         let (code, out) = run_args(&["wattwarden", "--uninstall-service"], &rt);
         assert_eq!(code, 0);
         assert_eq!(out, "✅ WattWarden background service uninstalled.\n");
+    }
+
+    fn vostro_report() -> HealthReport {
+        HealthReport {
+            present: true,
+            health: BatteryHealth {
+                present: true,
+                full: Some(2_068_000),
+                design: Some(3_684_000),
+                unit: Some(wattwarden_core::HealthUnit::ChargeUah),
+                cycle_count: Some(0),
+                temp_c: Some(38.5),
+                model: Some("DELL FC92NFB".to_string()),
+                manufacturer: Some("Samsung SDI".to_string()),
+                serial: None,
+            },
+            capacity: 75,
+            charging: false,
+            configured_limit: None,
+            active_threshold: Some(80),
+            time_remaining: "2h 30m".to_string(),
+        }
+    }
+
+    #[test]
+    fn golden_health_without_battery() {
+        let rt = FakeRuntime::new(true, false, false);
+        let (code, out) = run_args(&["wattwarden", "--health"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "No battery detected (stationary mains).\n");
+    }
+
+    /// The Vostro 5471 pack, golden-rendered: 2068/3684 mAh = 56.1% with the
+    /// suggestion nudge (charge limit unset).
+    #[test]
+    fn golden_health_vostro_report_with_nudge() {
+        let rt = FakeRuntime::new(true, false, false).with_report(vostro_report());
+        let (code, out) = run_args(&["wattwarden", "health"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(
+            out,
+            "Battery Health\n\
+             \x20 Device        : Samsung SDI DELL FC92NFB\n\
+             \x20 Health        : 56.1% (2068/3684) mAh\n\
+             \x20 Cycles        : 0\n\
+             \x20 Temperature   : 38.5°C\n\
+             \x20 Charge        : 75% (Discharging)\n\
+             \x20 Charge limit  : not set (active threshold 80%)\n\
+             \x20 Est. time     : 2h 30m\n\
+             \n\
+             \x20 Suggestion: sudo wattwarden charge-limit 80 — WattWarden never applies this by itself.\n"
+        );
+    }
+
+    #[test]
+    fn health_with_limit_hides_nudge() {
+        let mut report = vostro_report();
+        report.configured_limit = Some(80);
+        report.active_threshold = Some(80);
+        let rt = FakeRuntime::new(true, false, false).with_report(report);
+        let (code, out) = run_args(&["wattwarden", "--health"], &rt);
+        assert_eq!(code, 0);
+        assert!(out.contains("Charge limit  : configured 80% (active threshold 80%)"));
+        assert!(!out.contains("Suggestion"));
+    }
+
+    #[test]
+    fn status_shows_battery_line_only_with_battery() {
+        let rt = FakeRuntime::new(true, true, false).with_report(vostro_report());
+        let (_, out) = run_args(&["wattwarden", "--status"], &rt);
+        assert_eq!(
+            out,
+            "WattWarden Daemon Status: [ACTIVE] (Running in background)\nBattery Health: 56.1% | Charge limit: not set\n"
+        );
+
+        // Without a battery the status line is unchanged.
+        let rt = FakeRuntime::new(true, true, false);
+        let (_, out) = run_args(&["wattwarden", "--status"], &rt);
+        assert_eq!(
+            out,
+            "WattWarden Daemon Status: [ACTIVE] (Running in background)\n"
+        );
+    }
+
+    #[test]
+    fn charge_limit_set_clear_and_validate() {
+        let rt = FakeRuntime::new(true, false, false);
+
+        let (code, out) = run_args(&["wattwarden", "--charge-limit", "80"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Charge limit set to: 80%\n");
+        assert_eq!(rt.charge_limit.get(), Some(80));
+
+        let (code, out) = run_args(&["wattwarden", "--charge-limit", "off"], &rt);
+        assert_eq!(code, 0);
+        assert!(out.contains("Charge limit cleared"));
+        assert_eq!(rt.charge_limit.get(), None);
+
+        for bad in ["30", "101", "banana"] {
+            let (code, out) = run_args(&["wattwarden", "--charge-limit", bad], &rt);
+            assert_eq!(code, 1, "{bad} must be rejected");
+            assert!(out.contains("must be a value between 55 and 100"));
+        }
+    }
+
+    /// `charge-limit off` must never write sysfs: the active threshold may come
+    /// from the BIOS or another tool.
+    #[test]
+    fn charge_limit_off_reports_external_threshold() {
+        let rt = FakeRuntime::new(true, false, false).with_report(vostro_report());
+        let (code, out) = run_args(&["wattwarden", "charge-limit", "off"], &rt);
+        assert_eq!(code, 0);
+        assert!(out.contains("Active threshold remains: 80% (set outside WattWarden)."));
+        assert_eq!(rt.charge_limit.get(), None);
+    }
+
+    #[test]
+    fn charge_limit_and_calibrate_require_root() {
+        let rt = FakeRuntime::new(false, false, false);
+        let (code, out) = run_args(&["wattwarden", "--charge-limit", "80"], &rt);
+        assert_eq!(code, 1);
+        assert!(out.contains("root privileges"));
+        let (code, out) = run_args(&["wattwarden", "--calibrate", "start"], &rt);
+        assert_eq!(code, 1);
+        assert!(out.contains("root privileges"));
+    }
+
+    #[test]
+    fn calibrate_flow_dispatches_phases() {
+        let rt = FakeRuntime::new(true, false, false);
+        let (code, out) = run_args(&["wattwarden", "--calibrate", "start"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Calibration started (fake).\n");
+
+        let (code, out) = run_args(&["wattwarden", "--calibrate", "status"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Calibration in progress (fake).\n");
+
+        for verb in ["done", "abort"] {
+            let (code, out) = run_args(&["wattwarden", "--calibrate", verb], &rt);
+            assert_eq!(code, 0);
+            assert_eq!(out, "Calibration finished (fake).\n");
+        }
+
+        let (code, out) = run_args(&["wattwarden", "--calibrate", "bogus"], &rt);
+        assert_eq!(code, 1);
+        assert!(out.contains("unknown calibrate phase 'bogus'"));
     }
 }
