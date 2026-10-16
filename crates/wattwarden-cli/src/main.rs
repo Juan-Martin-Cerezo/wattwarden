@@ -11,7 +11,9 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
-use wattwarden_core::{ChargeThreshold, Config, PowerSource};
+use wattwarden_core::{
+    AutoExtremeLevel, ChargeThreshold, Config, DisplayManager, PowerProfile, PowerSource,
+};
 use wattwarden_daemon::{spawn, DaemonRunner, PidManager};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 use wattwarden_tui::{run_tui, App};
@@ -256,6 +258,36 @@ impl CliRuntime for RealRuntime {
     fn calibrate_finish(&self) -> Result<String, String> {
         let backend = build_backend()?;
         calibrate::finish(&backend.threshold, Path::new(calibrate::STATE_PATH))
+    }
+    fn set_profile(&self, profile: Option<PowerProfile>) -> Result<(), String> {
+        let backend = build_backend()?;
+        let effective = profile.clone().unwrap_or(PowerProfile::Normal);
+        backend
+            .apply_profile(&effective)
+            .map_err(|e| e.to_string())?;
+        let mut cfg = Config::load_or_default(None);
+        cfg.profile = profile;
+        cfg.save(None).map_err(|e| e.to_string())
+    }
+    fn set_auto_extreme_level(&self, level: AutoExtremeLevel) -> Result<(), String> {
+        let mut cfg = Config::load_or_default(None);
+        cfg.auto_extreme_level = level;
+        cfg.save(None).map_err(|e| e.to_string())
+    }
+    fn set_brightness_percent(&self, percent: u8) -> Result<(), String> {
+        let backend = build_backend()?;
+        let backlight = backend
+            .backlight
+            .as_ref()
+            .ok_or_else(|| "no backlight exposed on this machine".to_string())?;
+        backlight
+            .set_brightness_percent(percent.clamp(1, 100))
+            .map_err(|e| e.to_string())?;
+        // A manual brightness replaces auto-brightness, matching the dashboard.
+        let mut cfg = Config::load_or_default(None);
+        cfg.auto_brightness = false;
+        let _ = cfg.save(None);
+        Ok(())
     }
 }
 

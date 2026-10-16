@@ -7,7 +7,7 @@
 //! contract can be unit-tested without root, hardware, systemd, or a terminal.
 
 use std::io::Write;
-use wattwarden_core::BatteryHealth;
+use wattwarden_core::{AutoExtremeLevel, BatteryHealth, PowerProfile};
 
 /// Battery facts the CLI needs to render `--health` and the `--status` battery line.
 #[derive(Debug, Clone, Default)]
@@ -53,6 +53,12 @@ pub trait CliRuntime {
     fn calibrate_start(&self) -> Result<String, String>;
     fn calibrate_status(&self) -> Result<String, String>;
     fn calibrate_finish(&self) -> Result<String, String>;
+    /// Apply a power profile and persist it (`None` = restore defaults).
+    fn set_profile(&self, profile: Option<PowerProfile>) -> Result<(), String>;
+    /// Persist the Auto Extreme adaptive level.
+    fn set_auto_extreme_level(&self, level: AutoExtremeLevel) -> Result<(), String>;
+    /// Set LCD brightness (1-100); disables auto-brightness like the dashboard does.
+    fn set_brightness_percent(&self, percent: u8) -> Result<(), String>;
 }
 
 /// Standard command usage and help output.
@@ -106,6 +112,22 @@ pub fn print_help(out: &mut dyn Write) {
     let _ = writeln!(
         out,
         "  sudo wattwarden --calibrate <start|status|done|abort> Recalibrate the battery gauge"
+    );
+    let _ = writeln!(
+        out,
+        "  sudo wattwarden profile <name>    Apply profile (normal, performance, extreme, auto)"
+    );
+    let _ = writeln!(
+        out,
+        "  sudo wattwarden level <low|medium|high> Set Auto Extreme adaptive level"
+    );
+    let _ = writeln!(
+        out,
+        "  sudo wattwarden brightness <val>  Set display brightness (1-100) or toggle auto (on/off)"
+    );
+    let _ = writeln!(
+        out,
+        "  sudo wattwarden service <install|uninstall> Manage the background system service"
     );
 }
 
@@ -464,6 +486,125 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
                 return 0;
             }
 
+            "brightness" => match args.get(2).map(String::as_str) {
+                Some(arg @ ("on" | "off")) => {
+                    let enabled = arg == "on";
+                    rt.set_auto_brightness(enabled);
+                    let _ = writeln!(out, "Auto-brightness set to: {enabled}");
+                    return 0;
+                }
+                Some(arg) => match arg.parse::<u8>() {
+                    Ok(n) if (1..=100).contains(&n) => {
+                        if !rt.is_root() {
+                            let _ = writeln!(
+                                    out,
+                                    "Error: Administrator/root privileges are required to set brightness."
+                                );
+                            return 1;
+                        }
+                        return match rt.set_brightness_percent(n) {
+                            Ok(()) => {
+                                let _ = writeln!(out, "Brightness set to: {n}%");
+                                0
+                            }
+                            Err(e) => {
+                                let _ = writeln!(out, "Error setting brightness: {e}");
+                                1
+                            }
+                        };
+                    }
+                    _ => {
+                        let _ = writeln!(out, "Error: brightness must be 1-100, 'on' or 'off'.");
+                        return 1;
+                    }
+                },
+                None => {
+                    let _ = writeln!(
+                        out,
+                        "Auto-brightness is currently: {}",
+                        rt.auto_brightness()
+                    );
+                    return 0;
+                }
+            },
+
+            "profile" | "--profile" => {
+                if !rt.is_root() {
+                    let _ = writeln!(
+                        out,
+                        "Error: Administrator/root privileges are required to change system power settings."
+                    );
+                    return 1;
+                }
+                let name = args
+                    .get(2)
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let result = match name.as_str() {
+                    "performance" | "perf" => rt.set_profile(Some(PowerProfile::Performance)),
+                    "extreme" => rt.set_profile(Some(PowerProfile::Extreme)),
+                    "normal" | "restore" | "default" => rt.set_profile(None),
+                    "auto" => rt.start_background_daemon(),
+                    _ => {
+                        let _ = writeln!(
+                            out,
+                            "Error: unknown profile '{}' (use normal|performance|extreme|auto).",
+                            args.get(2).map(String::as_str).unwrap_or("")
+                        );
+                        return 1;
+                    }
+                };
+                return match result {
+                    Ok(()) => {
+                        let label = match name.as_str() {
+                            "performance" | "perf" => "Performance",
+                            "extreme" => "Extreme",
+                            "auto" => "Auto Extreme",
+                            _ => "Normal (restored)",
+                        };
+                        let _ = writeln!(out, "Power profile set to: {label}");
+                        0
+                    }
+                    Err(e) => {
+                        let _ = writeln!(out, "Error setting profile: {e}");
+                        1
+                    }
+                };
+            }
+
+            "level" | "--level" => {
+                if !rt.is_root() {
+                    let _ = writeln!(
+                        out,
+                        "Error: Administrator/root privileges are required to change the Auto Extreme level."
+                    );
+                    return 1;
+                }
+                return match args.get(2).map(String::as_str) {
+                    Some(l @ ("low" | "medium" | "high")) => {
+                        let level = match l {
+                            "low" => AutoExtremeLevel::Low,
+                            "medium" => AutoExtremeLevel::Medium,
+                            _ => AutoExtremeLevel::High,
+                        };
+                        match rt.set_auto_extreme_level(level) {
+                            Ok(()) => {
+                                let _ = writeln!(out, "Auto Extreme level set to: {l}");
+                                0
+                            }
+                            Err(e) => {
+                                let _ = writeln!(out, "Error setting level: {e}");
+                                1
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = writeln!(out, "Error: level must be low, medium or high.");
+                        1
+                    }
+                };
+            }
+
             "--version" | "-v" | "version" => {
                 let _ = writeln!(out, "WattWarden v{}", env!("CARGO_PKG_VERSION"));
                 return 0;
@@ -508,7 +649,7 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     struct FakeRuntime {
         root: bool,
@@ -516,6 +657,7 @@ mod tests {
         auto_brightness: Cell<bool>,
         report: HealthReport,
         charge_limit: Cell<Option<u8>>,
+        calls: RefCell<Vec<String>>,
     }
 
     impl FakeRuntime {
@@ -526,6 +668,7 @@ mod tests {
                 auto_brightness: Cell::new(auto_brightness),
                 report: HealthReport::default(),
                 charge_limit: Cell::new(None),
+                calls: RefCell::new(Vec::new()),
             }
         }
 
@@ -581,6 +724,20 @@ mod tests {
         fn calibrate_finish(&self) -> Result<String, String> {
             Ok("Calibration finished (fake).".to_string())
         }
+        fn set_profile(&self, profile: Option<PowerProfile>) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("profile:{profile:?}"));
+            Ok(())
+        }
+        fn set_auto_extreme_level(&self, level: AutoExtremeLevel) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("level:{level:?}"));
+            Ok(())
+        }
+        fn set_brightness_percent(&self, percent: u8) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("brightness:{percent}"));
+            Ok(())
+        }
     }
 
     fn run_args(args: &[&str], rt: &FakeRuntime) -> (i32, String) {
@@ -610,6 +767,12 @@ mod tests {
         s.push_str("  sudo wattwarden --health          Show battery health, charge limit and suggestions\n");
         s.push_str("  sudo wattwarden --charge-limit <55-100|off> Set or clear the battery charge ceiling\n");
         s.push_str("  sudo wattwarden --calibrate <start|status|done|abort> Recalibrate the battery gauge\n");
+        s.push_str("  sudo wattwarden profile <name>    Apply profile (normal, performance, extreme, auto)\n");
+        s.push_str("  sudo wattwarden level <low|medium|high> Set Auto Extreme adaptive level\n");
+        s.push_str("  sudo wattwarden brightness <val>  Set display brightness (1-100) or toggle auto (on/off)\n");
+        s.push_str(
+            "  sudo wattwarden service <install|uninstall> Manage the background system service\n",
+        );
         s
     }
 
@@ -704,7 +867,7 @@ mod tests {
         assert_eq!(out, expected);
 
         // So does a bare unknown word.
-        let (code, out) = run_args(&["wattwarden", "profile", "extreme"], &rt);
+        let (code, out) = run_args(&["wattwarden", "bogus-command"], &rt);
         assert_eq!(code, 1);
         assert_eq!(out, expected);
     }
@@ -761,8 +924,17 @@ mod tests {
             fn calibrate_finish(&self) -> Result<String, String> {
                 Ok(String::new())
             }
+            fn set_profile(&self, _profile: Option<PowerProfile>) -> Result<(), String> {
+                Ok(())
+            }
+            fn set_auto_extreme_level(&self, _level: AutoExtremeLevel) -> Result<(), String> {
+                Ok(())
+            }
+            fn set_brightness_percent(&self, _percent: u8) -> Result<(), String> {
+                Ok(())
+            }
         }
-        for flag in ["--frobnicate", "--level", "profile", "bogus-flag-xyz"] {
+        for flag in ["--frobnicate", "bogus-flag-xyz"] {
             let rt = SpyRuntime {
                 dashboard_launched: Cell::new(false),
             };
@@ -977,5 +1149,95 @@ mod tests {
         let (code, out) = run_args(&["wattwarden", "--calibrate", "bogus"], &rt);
         assert_eq!(code, 1);
         assert!(out.contains("unknown calibrate phase 'bogus'"));
+    }
+
+    #[test]
+    fn service_subcommand_manages_service() {
+        let rt = FakeRuntime::new(true, false, false);
+        let (code, out) = run_args(&["wattwarden", "service", "install"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(
+            out,
+            "✅ WattWarden background service installed and started successfully.\n"
+        );
+        let (code, out) = run_args(&["wattwarden", "service", "uninstall"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "✅ WattWarden background service uninstalled.\n");
+        let (code, out) = run_args(&["wattwarden", "service", "bogus"], &rt);
+        assert_eq!(code, 1);
+        assert!(
+            out.contains("Usage:"),
+            "unknown service subcommand prints help"
+        );
+
+        let rt = FakeRuntime::new(false, false, false);
+        let (code, _) = run_args(&["wattwarden", "service", "install"], &rt);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn profile_subcommand_applies_and_validates() {
+        let rt = FakeRuntime::new(true, false, false);
+        let (code, out) = run_args(&["wattwarden", "profile", "performance"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Power profile set to: Performance\n");
+        let (code, out) = run_args(&["wattwarden", "profile", "normal"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Power profile set to: Normal (restored)\n");
+        let (code, out) = run_args(&["wattwarden", "profile", "auto"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Power profile set to: Auto Extreme\n");
+        let (code, out) = run_args(&["wattwarden", "profile", "bogus"], &rt);
+        assert_eq!(code, 1);
+        assert!(out.contains("unknown profile 'bogus'"));
+
+        let calls = rt.calls.borrow().clone();
+        assert!(calls.contains(&"profile:Some(Performance)".to_string()));
+        assert!(calls.contains(&"profile:None".to_string()));
+
+        let rt = FakeRuntime::new(false, false, false);
+        let (code, _) = run_args(&["wattwarden", "profile", "extreme"], &rt);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn level_subcommand_sets_level_and_requires_root() {
+        let rt = FakeRuntime::new(true, false, false);
+        for (arg, label) in [("low", "Low"), ("medium", "Medium"), ("high", "High")] {
+            let (code, out) = run_args(&["wattwarden", "level", arg], &rt);
+            assert_eq!(code, 0);
+            assert_eq!(out, format!("Auto Extreme level set to: {arg}\n"));
+            assert!(rt.calls.borrow().contains(&format!("level:{label}")));
+        }
+        let (code, out) = run_args(&["wattwarden", "level", "banana"], &rt);
+        assert_eq!(code, 1);
+        assert!(out.contains("level must be low, medium or high"));
+
+        let rt = FakeRuntime::new(false, false, false);
+        let (code, _) = run_args(&["wattwarden", "level", "low"], &rt);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn brightness_subcommand_sets_percent_or_auto() {
+        let rt = FakeRuntime::new(true, false, false);
+        let (code, out) = run_args(&["wattwarden", "brightness", "50"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Brightness set to: 50%\n");
+        assert!(rt.calls.borrow().contains(&"brightness:50".to_string()));
+
+        let (code, out) = run_args(&["wattwarden", "brightness", "on"], &rt);
+        assert_eq!(code, 0);
+        assert_eq!(out, "Auto-brightness set to: true\n");
+
+        for bad in ["0", "101", "banana"] {
+            let (code, out) = run_args(&["wattwarden", "brightness", bad], &rt);
+            assert_eq!(code, 1, "{bad} must be rejected");
+            assert!(out.contains("brightness must be 1-100"));
+        }
+
+        let rt = FakeRuntime::new(false, false, false);
+        let (code, _) = run_args(&["wattwarden", "brightness", "50"], &rt);
+        assert_eq!(code, 1);
     }
 }
