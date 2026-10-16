@@ -128,6 +128,10 @@ sudo wattwarden daemon              # Run daemon in foreground (for systemd/laun
   `charge-limit off` clears WattWarden's setting and *never* touches the hardware threshold
   (it may be managed by the BIOS or another tool). The dashboard's **Charge Limit** row
   cycles OFF → 55…100 the same way.
+- **macOS**: health metrics come from `ioreg` (`AppleSmartBattery`: full vs design
+  capacity, cycles, temperature). The charge ceiling and calibration are **Linux-only**:
+  macOS exposes no charge threshold and manages charging natively via Optimized Battery
+  Charging, so `charge-limit`/`calibrate` report unsupported instead of pretending.
 - **History & temperature** (opt-in, off by default): set `"battery_health_log": true` in
   `/etc/wattwarden/config.json` to append an hourly CSV sample to
   `/var/log/wattwarden-health.log`, and `"battery_temp_warn_c": 45` to get a log warning
