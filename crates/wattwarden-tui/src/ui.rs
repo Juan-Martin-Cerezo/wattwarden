@@ -336,17 +336,9 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ActionItem::ProfileRestore => ("♻  Restore Mode", "[EXECUTE]".into(), false),
         ActionItem::HealthLine => {
             let h = app.backend.battery.health().unwrap_or_default();
-            let val = match (h.health_pct(), h.unit) {
-                (Some(pct), Some(unit)) => match (h.full, h.design) {
-                    (Some(full), Some(design)) => format!(
-                        "[{pct}% ({}/{}) {}]",
-                        unit.scale_to_display(full),
-                        unit.scale_to_display(design),
-                        unit.display_label()
-                    ),
-                    _ => format!("[{pct}%]"),
-                },
-                _ => "[N/A]".to_string(),
+            let val = match h.health_pct() {
+                Some(pct) => format!("[{pct}%]"),
+                None => "[N/A]".to_string(),
             };
             ("Battery Health", val, false)
         }
