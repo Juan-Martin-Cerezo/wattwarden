@@ -19,8 +19,6 @@ wattwarden-tui = { path = "../wattwarden-tui" }
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-serde.workspace = true
-serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["user", "signal", "process"] }

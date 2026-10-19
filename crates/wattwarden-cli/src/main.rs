@@ -1,4 +1,3 @@
-mod calibrate;
 mod cli;
 mod privilege;
 mod service;
@@ -11,6 +10,7 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
+use wattwarden_core::calibrate;
 use wattwarden_core::{
     AutoExtremeLevel, ChargeThreshold, Config, DisplayManager, PowerProfile, PowerSource,
 };

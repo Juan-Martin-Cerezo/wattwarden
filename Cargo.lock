@@ -786,8 +786,6 @@ name = "wattwarden-cli"
 version = "2.1.0"
 dependencies = [
  "nix",
- "serde",
- "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

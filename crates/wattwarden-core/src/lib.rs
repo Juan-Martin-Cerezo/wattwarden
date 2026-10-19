@@ -1,4 +1,5 @@
 pub mod battery_health;
+pub mod calibrate;
 pub mod config;
 pub mod error;
 pub mod traits;
