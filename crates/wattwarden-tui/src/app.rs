@@ -142,6 +142,27 @@ fn first_line(msg: &str) -> String {
     msg.lines().next().unwrap_or_default().to_string()
 }
 
+/// Selection step over the menu: forward = down, backward = up. Headers are
+/// skipped and the selection **clamps at both ends** — at the top there is no
+/// further scroll up, at the bottom no further scroll down (no wrap-around).
+pub fn step_selection(items: &[ActionItem], selected: usize, forward: bool) -> usize {
+    if forward {
+        let mut next = selected + 1;
+        while next < items.len() && items[next].is_header() {
+            next += 1;
+        }
+        return if next < items.len() { next } else { selected };
+    }
+    let mut prev = selected;
+    while prev > 0 {
+        prev -= 1;
+        if !items[prev].is_header() {
+            return prev;
+        }
+    }
+    selected
+}
+
 /// Builds the menu layout dynamically based on the detected operating system name.
 fn build_menu(os_name: &str) -> Vec<ActionItem> {
     let mut items = vec![
@@ -388,26 +409,15 @@ impl App {
         }
     }
 
+    /// Down: the next actionable item. Stops at the last one — no wrap.
     pub fn next_menu(&mut self) {
-        let len = self.items.len();
-        let mut next = (self.selected + 1) % len;
-        while self.items[next].is_header() {
-            next = (next + 1) % len;
-        }
-        self.selected = next;
+        self.selected = step_selection(&self.items, self.selected, true);
     }
 
+    /// Up: the previous actionable item. Stops at the first one — at the top
+    /// there is nothing more to scroll up to.
     pub fn prev_menu(&mut self) {
-        let len = self.items.len();
-        let mut prev = if self.selected == 0 {
-            len - 1
-        } else {
-            self.selected - 1
-        };
-        while self.items[prev].is_header() {
-            prev = if prev == 0 { len - 1 } else { prev - 1 };
-        }
-        self.selected = prev;
+        self.selected = step_selection(&self.items, self.selected, false);
     }
 
     pub fn confirm_extreme_mode(&mut self) {
@@ -894,6 +904,35 @@ mod tests {
             phase: calibrate::Phase::Discharge,
         };
         assert_eq!(calibration_display(Some(&state)), "[discharge]");
+    }
+
+    /// Navigation clamps at the ends: at the top there is no further scroll up,
+    /// at the bottom no further scroll down, and headers never receive selection.
+    #[test]
+    fn navigation_clamps_at_both_ends_without_wrap() {
+        use ActionItem::*;
+        let items = vec![
+            Header("─── [ PROFILES ] ───".into()),
+            ProfilePerformance,
+            Header(String::new()),
+            ProfileExtreme,
+            Header("─── [ BATTERY ] ───".into()),
+            HealthLine,
+        ];
+
+        // First actionable item is index 1; Up must stay there (no wrap).
+        assert_eq!(step_selection(&items, 1, false), 1, "top: up must not wrap");
+        // Down walks over headers to the next actionable items.
+        assert_eq!(step_selection(&items, 1, true), 3);
+        assert_eq!(step_selection(&items, 3, true), 5);
+        // Bottom: down must stay (no wrap back to the profiles).
+        assert_eq!(
+            step_selection(&items, 5, true),
+            5,
+            "bottom: down must not wrap"
+        );
+        // And back up again lands on the previous actionable item.
+        assert_eq!(step_selection(&items, 5, false), 3);
     }
 
     #[test]
