@@ -82,12 +82,12 @@ else
   else
     CANDIDATE_URLS+=(
       "https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}"
-      "https://github.com/${REPO}/releases/download/v2.0.0/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}"
+      "https://github.com/${REPO}/releases/download/v2.1.0/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}"
     )
     if [[ -n "${ALT_ARCH_NAME}" ]]; then
       CANDIDATE_URLS+=(
         "https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS_NAME}-${ALT_ARCH_NAME}"
-        "https://github.com/${REPO}/releases/download/v2.0.0/${BINARY_NAME}-${OS_NAME}-${ALT_ARCH_NAME}"
+        "https://github.com/${REPO}/releases/download/v2.1.0/${BINARY_NAME}-${OS_NAME}-${ALT_ARCH_NAME}"
       )
     fi
   fi
@@ -172,7 +172,7 @@ fi
 # Configure system background service on Linux
 if [[ "${SKIP_SERVICE:-0}" != "1" && "${OS_NAME}" == "linux" ]]; then
   echo "⚙️ Configuring background systemd service..."
-  $SUDO "${INSTALL_DIR}/${BINARY_NAME}" service install >/dev/null 2>&1 || true
+  $SUDO "${INSTALL_DIR}/${BINARY_NAME}" --install-service >/dev/null 2>&1 || true
 fi
 
 # Verification

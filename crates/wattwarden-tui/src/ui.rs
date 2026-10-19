@@ -1,4 +1,4 @@
-use crate::app::{ActionItem, App};
+use crate::app::{calibration_display, ActionItem, App};
 use ratatui::{
     buffer::Buffer,
     style::{Color, Modifier, Style},
@@ -336,12 +336,35 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
         ActionItem::ProfileRestore => ("♻  Restore Mode", "[EXECUTE]".into(), false),
         ActionItem::HealthLine => {
             let h = app.backend.battery.health().unwrap_or_default();
-            let val = match (h.health_pct(), h.cycle_count) {
-                (Some(pct), Some(c)) => format!("[{pct}% / {c} cyc]"),
-                (Some(pct), None) => format!("[{pct}%]"),
-                _ => "[N/A]".into(),
+            let val = match (h.health_pct(), h.unit) {
+                (Some(pct), Some(unit)) => match (h.full, h.design) {
+                    (Some(full), Some(design)) => format!(
+                        "[{pct}% ({}/{}) {}]",
+                        unit.scale_to_display(full),
+                        unit.scale_to_display(design),
+                        unit.display_label()
+                    ),
+                    _ => format!("[{pct}%]"),
+                },
+                _ => "[N/A]".to_string(),
             };
             ("Battery Health", val, false)
+        }
+        ActionItem::CycleLine => {
+            let h = app.backend.battery.health().unwrap_or_default();
+            let val = match h.cycle_count {
+                Some(c) => format!("[{c}]"),
+                None => "[N/A]".to_string(),
+            };
+            ("Battery Cycles", val, false)
+        }
+        ActionItem::TempLine => {
+            let h = app.backend.battery.health().unwrap_or_default();
+            let val = match h.temp_c {
+                Some(t) => format!("[{t:.1}°C]"),
+                None => "[N/A]".to_string(),
+            };
+            ("Battery Temp", val, false)
         }
         ActionItem::ChargeLimit => (
             "Charge Limit",
@@ -351,6 +374,13 @@ fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
             },
             app.config.battery_charge_limit.is_some(),
         ),
+        ActionItem::Calibration => (
+            "Calibration",
+            calibration_display(app.calibration_state().as_ref()),
+            false,
+        ),
+        ActionItem::Calibrate => ("Calibrate", "[EXECUTE]".into(), false),
+        ActionItem::CalibRestore => ("Calib Restore", "[EXECUTE]".into(), false),
         ActionItem::Cores => {
             let online = app.backend.cpu.online_cores().unwrap_or(1);
             let total = app.backend.cpu.num_cpus();

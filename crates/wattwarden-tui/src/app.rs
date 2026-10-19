@@ -1,5 +1,6 @@
 // Only Linux (systemd) shells out from the dashboard; macOS
 // drives everything through its backend.
+use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -29,7 +30,12 @@ pub enum ActionItem {
     AutoBrightness,
     ProfileRestore,
     HealthLine,
+    CycleLine,
+    TempLine,
     ChargeLimit,
+    Calibration,
+    Calibrate,
+    CalibRestore,
     Cores,
     FreqLimit,
     GpuFreq,
@@ -123,6 +129,19 @@ pub fn next_charge_limit(current: Option<u8>, forward: bool) -> Option<u8> {
     STEPS[next]
 }
 
+/// Label for the read-only Calibration row: current phase, or "not started".
+pub fn calibration_display(state: Option<&calibrate::CalibrationState>) -> String {
+    match state {
+        Some(s) => format!("[{}]", s.phase.name()),
+        None => "[not started]".to_string(),
+    }
+}
+
+/// First line of a calibrate message, suitable for a single-line toast.
+fn first_line(msg: &str) -> String {
+    msg.lines().next().unwrap_or_default().to_string()
+}
+
 /// Builds the menu layout dynamically based on the detected operating system name.
 fn build_menu(os_name: &str) -> Vec<ActionItem> {
     let mut items = vec![
@@ -136,7 +155,12 @@ fn build_menu(os_name: &str) -> Vec<ActionItem> {
         ActionItem::Header(String::new()),
         ActionItem::Header("─── [ BATTERY ] ───────────────────────".into()),
         ActionItem::HealthLine,
+        ActionItem::CycleLine,
+        ActionItem::TempLine,
         ActionItem::ChargeLimit,
+        ActionItem::Calibration,
+        ActionItem::Calibrate,
+        ActionItem::CalibRestore,
         ActionItem::Header(String::new()),
     ];
 
@@ -461,6 +485,28 @@ impl App {
                 };
                 self.set_charge_limit(next);
             }
+            ActionItem::Calibrate => {
+                self.stop_daemon();
+                let path = Path::new(calibrate::STATE_PATH);
+                let result = if self.calibration_state().is_some() {
+                    calibrate::status(&self.backend.battery, path)
+                } else {
+                    calibrate::start(&self.backend.threshold, path)
+                };
+                match result {
+                    Ok(msg) => self.set_toast(first_line(&msg)),
+                    Err(e) => self.set_toast(first_line(&e)),
+                }
+            }
+            ActionItem::CalibRestore => {
+                self.stop_daemon();
+                let result =
+                    calibrate::finish(&self.backend.threshold, Path::new(calibrate::STATE_PATH));
+                match result {
+                    Ok(msg) => self.set_toast(first_line(&msg)),
+                    Err(e) => self.set_toast(first_line(&e)),
+                }
+            }
             ActionItem::ProcessPurge => {
                 let _ = self.backend.tweaks.process_purge();
                 self.set_toast("PROCESSES PURGED");
@@ -502,6 +548,11 @@ impl App {
     fn cycle_charge_limit(&mut self, forward: bool) {
         let next = next_charge_limit(self.config.battery_charge_limit, forward);
         self.set_charge_limit(next);
+    }
+
+    /// Persisted calibration state (shared with the CLI via `wattwarden_core::calibrate`).
+    pub fn calibration_state(&self) -> Option<calibrate::CalibrationState> {
+        calibrate::CalibrationState::load(Path::new(calibrate::STATE_PATH))
     }
 
     fn toggle_boolean(&mut self, item: &ActionItem) {
@@ -821,6 +872,9 @@ mod tests {
             ActionItem::Brightness,
             ActionItem::AutoBrightness,
             ActionItem::HealthLine,
+            ActionItem::CycleLine,
+            ActionItem::TempLine,
+            ActionItem::Calibration,
             ActionItem::Epp,
             ActionItem::Aspm,
             ActionItem::ProcessPurge,
@@ -830,6 +884,16 @@ mod tests {
                 "{item:?} must not stop the daemon"
             );
         }
+    }
+
+    #[test]
+    fn calibration_display_shows_phase_or_not_started() {
+        assert_eq!(calibration_display(None), "[not started]");
+        let state = calibrate::CalibrationState {
+            saved_threshold: Some(80),
+            phase: calibrate::Phase::Discharge,
+        };
+        assert_eq!(calibration_display(Some(&state)), "[discharge]");
     }
 
     #[test]
@@ -871,7 +935,12 @@ mod tests {
             blank.clone(),
             h_bat,
             HealthLine,
+            CycleLine,
+            TempLine,
             ChargeLimit,
+            Calibration,
+            Calibrate,
+            CalibRestore,
             blank.clone(),
         ];
 

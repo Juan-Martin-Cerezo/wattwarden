@@ -123,7 +123,8 @@ sudo wattwarden daemon              # Run daemon in foreground (for systemd/laun
 - **Calibration** relearns the gauge: `sudo wattwarden calibrate start` lifts the ceiling
   to 100%, then follow the guided phases (`status` walks charge → discharge to 10% →
   recharge) and finish with `sudo wattwarden calibrate done`, which restores the previous
-  threshold. Run it every couple of months.
+  threshold. Run it every couple of months. The dashboard's **BATTERY** section drives the
+  same phases: `Calibrate` starts (or advances) the cycle and `Calib Restore` finishes it.
 - **Charge ceiling**: `sudo wattwarden charge-limit 80` persists the limit and applies it;
   `charge-limit off` clears WattWarden's setting and *never* touches the hardware threshold
   (it may be managed by the BIOS or another tool). The dashboard's **Charge Limit** row
@@ -145,8 +146,8 @@ health`, but only applies one when you set it.
 ## ⌨️ TUI Controls
 
 - **Up / Down** or **W / S**: Navigate menu options.
-- **Left / Right** or **A / D**: Adjust hardware limits or values (brightness, active cores, frequency bounds).
-- **Enter**: Trigger highlighted action or toggle profile (**Performance**, **Extreme**, **Auto Extreme**, **Restore**).
+- **Left / Right** or **A / D**: Adjust hardware limits or values (brightness, active cores, frequency bounds, charge limit).
+- **Enter**: Trigger highlighted action or toggle profile (**Performance**, **Extreme**, **Auto Extreme**, **Restore**, battery **Calibrate** / **Calib Restore**).
 - **+ / -**: Speed up or slow down the live power graph refresh rate.
 - **R**: Hotkey to instantly restore default system power settings.
 - **Q / Esc**: Exit the TUI (if Auto Extreme is active, the daemon remains running seamlessly in the background).

@@ -8,10 +8,10 @@
 //! previous threshold. Nothing here runs automatically: every phase is a user
 //! command (WattWarden obeys the user, never the cable).
 
+use crate::traits::{ChargeThreshold, PowerSource};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use wattwarden_core::{ChargeThreshold, PowerSource};
 
 pub const STATE_PATH: &str = "/var/lib/wattwarden/calibration.json";
 
@@ -182,17 +182,15 @@ mod tests {
         fn supports_threshold(&self) -> bool {
             self.supported
         }
-        fn charge_threshold(&self) -> wattwarden_core::Result<u8> {
+        fn charge_threshold(&self) -> crate::Result<u8> {
             self.current
                 .lock()
                 .unwrap()
-                .ok_or_else(|| wattwarden_core::WattWardenError::Unsupported("no threshold".into()))
+                .ok_or_else(|| crate::WattWardenError::Unsupported("no threshold".into()))
         }
-        fn set_charge_threshold(&self, threshold: u8) -> wattwarden_core::Result<()> {
+        fn set_charge_threshold(&self, threshold: u8) -> crate::Result<()> {
             if !self.supported {
-                return Err(wattwarden_core::WattWardenError::Unsupported(
-                    "no threshold".into(),
-                ));
+                return Err(crate::WattWardenError::Unsupported("no threshold".into()));
             }
             *self.current.lock().unwrap() = Some(threshold);
             self.writes.lock().unwrap().push(threshold);
@@ -215,16 +213,16 @@ mod tests {
     }
 
     impl PowerSource for FakeBattery {
-        fn battery_percentage(&self) -> wattwarden_core::Result<u8> {
+        fn battery_percentage(&self) -> crate::Result<u8> {
             Ok(self.capacity.load(Ordering::Relaxed))
         }
-        fn is_charging(&self) -> wattwarden_core::Result<bool> {
+        fn is_charging(&self) -> crate::Result<bool> {
             Ok(self.charging.load(Ordering::Relaxed))
         }
-        fn consumption_watts(&self) -> wattwarden_core::Result<f64> {
+        fn consumption_watts(&self) -> crate::Result<f64> {
             Ok(0.0)
         }
-        fn time_remaining(&self) -> wattwarden_core::Result<String> {
+        fn time_remaining(&self) -> crate::Result<String> {
             Ok("Calculating...".into())
         }
     }
