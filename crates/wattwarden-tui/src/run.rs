@@ -135,6 +135,8 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             }
             _ => {}
         }
+        // Any key may have mutated hardware/config: re-read rows on next frame.
+        app.mark_rows_dirty();
     }
     Ok(())
 }

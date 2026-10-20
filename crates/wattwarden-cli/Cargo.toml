@@ -16,7 +16,7 @@ wattwarden-core = { path = "../wattwarden-core" }
 wattwarden-platform = { path = "../wattwarden-platform" }
 wattwarden-daemon = { path = "../wattwarden-daemon" }
 wattwarden-tui = { path = "../wattwarden-tui" }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

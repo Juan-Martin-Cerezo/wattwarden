@@ -145,21 +145,41 @@ impl DisplayManager for MacOsDisplay {
 pub struct MacOsThreshold;
 
 impl ChargeThreshold for MacOsThreshold {
-    /// macOS manages charging thresholds natively; custom thresholds are unsupported.
+    /// Charge ceilings are applied through the `bclm` SMC helper when it is
+    /// installed (`brew install zackelia/bclm/bclm`); without it macOS exposes
+    /// no supported threshold API (Optimized Battery Charging is the
+    /// system's own, undocumented mechanism).
     fn supports_threshold(&self) -> bool {
-        false
+        exec::has_program("bclm")
     }
 
     fn charge_threshold(&self) -> Result<u8> {
-        Err(WattWardenError::Unsupported(
-            "macOS battery thresholds managed natively via Optimized Battery Charging".into(),
-        ))
+        let raw = exec::run_capture("bclm", &["read"]);
+        raw.parse::<u8>().map_err(|_| {
+            WattWardenError::Unsupported(
+                "bclm is not installed or returned no threshold (brew install zackelia/bclm/bclm)"
+                    .into(),
+            )
+        })
     }
 
-    fn set_charge_threshold(&self, _threshold: u8) -> Result<()> {
-        Err(WattWardenError::Unsupported(
-            "macOS battery thresholds managed natively via Optimized Battery Charging".into(),
-        ))
+    fn set_charge_threshold(&self, threshold: u8) -> Result<()> {
+        if !self.supports_threshold() {
+            return Err(WattWardenError::Unsupported(
+                "no charge threshold API on macOS without `bclm` (brew install zackelia/bclm/bclm)"
+                    .into(),
+            ));
+        }
+        let clamped = threshold.clamp(20, 100);
+        exec::run_capture("bclm", &["write", &clamped.to_string()]);
+        // Read back: the SMC silently ignores what it cannot do.
+        let readback = self.charge_threshold()?;
+        if readback != clamped {
+            return Err(WattWardenError::Unsupported(format!(
+                "charge threshold did not stick: wrote {clamped}, SMC reports {readback}"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -473,6 +493,58 @@ mod tests {
             );
             assert!(output.contains("purge"), "purge was not invoked: {output}");
         });
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `bclm` drives the charge ceiling: state is written to and read back from
+    /// the helper, exactly like the real SMC wrapper.
+    #[test]
+    fn charge_threshold_roundtrips_through_bclm() {
+        let dir = std::env::temp_dir().join(format!("ww_mac_bclm_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("commands.log");
+
+        write_script(
+            &dir,
+            "bclm",
+            "#!/bin/sh\nSTATE=\"$(dirname \"$0\")/bclm.state\"\n\
+             case \"$1\" in\n\
+             \x20 read) if [ -f \"$STATE\" ]; then cat \"$STATE\"; else printf '100\\n'; fi ;;\n\
+             \x20 write) printf '%s\\n' \"$2\" > \"$STATE\" ;;\n\
+             esac\n",
+        );
+
+        with_fake_path(&dir, &log, || {
+            let t = MacOsThreshold;
+            assert!(t.supports_threshold(), "bclm present = threshold supported");
+            assert_eq!(t.charge_threshold().unwrap(), 100);
+            t.set_charge_threshold(80).unwrap();
+            assert_eq!(t.charge_threshold().unwrap(), 80);
+            // Out-of-range requests are clamped before they reach the SMC.
+            t.set_charge_threshold(200).unwrap();
+            assert_eq!(t.charge_threshold().unwrap(), 100);
+        });
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Without `bclm` the backend is honest: unsupported, never a fake success.
+    #[test]
+    fn charge_threshold_without_bclm_is_unsupported() {
+        let dir = std::env::temp_dir().join(format!("ww_mac_nobclm_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let _guard = crate::exec::env_lock();
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::set_var("PATH", &dir);
+        let t = MacOsThreshold;
+        assert!(!t.supports_threshold());
+        assert!(t.set_charge_threshold(80).is_err());
+        assert!(t.charge_threshold().is_err());
+        std::env::set_var("PATH", &old_path);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -3,6 +3,7 @@
 // any `cfg` is what lets tests run on Linux against fake binaries on `PATH`.
 pub mod exec;
 pub mod parse;
+pub mod privilege;
 
 #[cfg(target_os = "linux")]
 pub mod linux;

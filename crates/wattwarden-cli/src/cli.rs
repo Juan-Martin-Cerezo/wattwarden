@@ -59,6 +59,12 @@ pub trait CliRuntime {
     fn set_auto_extreme_level(&self, level: AutoExtremeLevel) -> Result<(), String>;
     /// Set LCD brightness (1-100); disables auto-brightness like the dashboard does.
     fn set_brightness_percent(&self, percent: u8) -> Result<(), String>;
+    /// Best-effort: re-run this same command with elevated privileges.
+    /// `Some(exit_code)` when an escalator ran it; `None` when no escalator is
+    /// usable and the caller should report the plain root error.
+    fn elevate(&self) -> Option<i32> {
+        None
+    }
 }
 
 /// Standard command usage and help output.
@@ -367,15 +373,26 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
             }
 
             "--charge-limit" | "charge-limit" => {
-                if !rt.is_root() {
+                // Only the mutations need privileges; the query is read-only.
+                let ensure_privileged = |out: &mut dyn Write| -> Option<i32> {
+                    if rt.is_root() {
+                        return None;
+                    }
+                    // The limit must land: retry through sudo/pkexec before giving up.
+                    if let Some(code) = rt.elevate() {
+                        return Some(code);
+                    }
                     let _ = writeln!(
                         out,
                         "Error: Administrator/root privileges are required to change the charge limit."
                     );
-                    return 1;
-                }
+                    Some(1)
+                };
                 match args.get(2).map(String::as_str) {
                     Some("off") => {
+                        if let Some(code) = ensure_privileged(out) {
+                            return code;
+                        }
                         if let Err(e) = rt.set_charge_limit(None) {
                             let _ = writeln!(out, "Error clearing charge limit: {e}");
                             return 1;
@@ -396,6 +413,9 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
                     }
                     Some(arg) => match arg.parse::<u8>() {
                         Ok(n) if (55..=100).contains(&n) => {
+                            if let Some(code) = ensure_privileged(out) {
+                                return code;
+                            }
                             if let Err(e) = rt.set_charge_limit(Some(n)) {
                                 let _ = writeln!(out, "Error setting charge limit: {e}");
                                 return 1;
@@ -441,6 +461,9 @@ pub fn run(args: &[String], out: &mut dyn Write, rt: &dyn CliRuntime) -> i32 {
 
             "--calibrate" | "calibrate" => {
                 if !rt.is_root() {
+                    if let Some(code) = rt.elevate() {
+                        return code;
+                    }
                     let _ = writeln!(
                         out,
                         "Error: Administrator/root privileges are required to run calibration."

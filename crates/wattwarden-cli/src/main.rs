@@ -289,6 +289,19 @@ impl CliRuntime for RealRuntime {
         let _ = cfg.save(None);
         Ok(())
     }
+
+    /// Re-runs the same command through `sudo` (terminal prompt) or `pkexec`
+    /// (graphical prompt), so hardware writes land without the user having to
+    /// retype anything.
+    fn elevate(&self) -> Option<i32> {
+        let exe = std::env::current_exe().ok()?;
+        let mut argv = vec![exe.to_string_lossy().into_owned()];
+        argv.extend(std::env::args().skip(1));
+        match wattwarden_platform::privilege::rerun_elevated(&argv, true) {
+            wattwarden_platform::privilege::Escalation::Ran(code) => Some(code),
+            _ => None,
+        }
+    }
 }
 
 fn main() {

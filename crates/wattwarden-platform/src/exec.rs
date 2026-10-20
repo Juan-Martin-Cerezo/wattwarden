@@ -24,6 +24,20 @@ pub fn run_capture(program: &str, args: &[&str]) -> String {
     }
 }
 
+/// True when `name` resolves to a file somewhere on `PATH`.
+pub fn has_program(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                dir.join(name)
+                    .metadata()
+                    .map(|m| m.is_file())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Fire-and-forget invocation; ignores errors.
 pub fn run_ignored(program: &str, args: &[&str]) {
     let _ = Command::new(program)

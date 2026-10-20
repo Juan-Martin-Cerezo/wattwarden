@@ -143,6 +143,8 @@ pub struct DaemonRunner {
     last_health_log: Arc<AtomicI64>,
     /// Epoch seconds of the last battery temperature warning (0 = never).
     last_temp_warn: Arc<AtomicI64>,
+    /// Epoch seconds of the last charge-threshold warning (0 = never).
+    last_charge_warn: Arc<AtomicI64>,
 }
 
 impl DaemonRunner {
@@ -155,6 +157,7 @@ impl DaemonRunner {
             last_applied_brightness: Arc::new(AtomicI16::new(-1)),
             last_health_log: Arc::new(AtomicI64::new(0)),
             last_temp_warn: Arc::new(AtomicI64::new(0)),
+            last_charge_warn: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -174,6 +177,7 @@ impl DaemonRunner {
             last_applied_brightness: Arc::new(AtomicI16::new(-1)),
             last_health_log: Arc::new(AtomicI64::new(0)),
             last_temp_warn: Arc::new(AtomicI64::new(0)),
+            last_charge_warn: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -414,6 +418,40 @@ impl DaemonRunner {
         // or battery. The cable never enables or disables anything by itself.
         let config = self.config();
         self.apply_logic_step(&config);
+        // Charge limit is re-asserted every tick so it survives firmware/BIOS
+        // interference and late-appearing battery nodes ("funciona siempre").
+        self.enforce_charge_limit(&config);
+    }
+
+    /// Keeps the user's configured charge ceiling in force. Opt-in: with
+    /// `battery_charge_limit: None` this reads and writes nothing. When the
+    /// threshold already sits at the configured value nothing is written — the
+    /// ceiling is only re-asserted after firmware, the BIOS or another tool
+    /// moved it, and threshold nodes that appear after boot are picked up.
+    pub fn enforce_charge_limit(&self, config: &Config) {
+        let Some(limit) = config.battery_charge_limit else {
+            return;
+        };
+        if !self.backend.threshold.supports_threshold() {
+            return;
+        }
+        if matches!(self.backend.threshold.charge_threshold(), Ok(cur) if cur == limit) {
+            return;
+        }
+        match self.backend.threshold.set_charge_threshold(limit) {
+            Ok(()) => info!("Battery charge threshold locked at {}%", limit),
+            Err(e) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let last = self.last_charge_warn.load(Ordering::Relaxed);
+                if last == 0 || now - last >= TEMP_WARN_INTERVAL_SECS {
+                    self.last_charge_warn.store(now, Ordering::Relaxed);
+                    warn!("Failed to apply battery charge threshold: {}", e);
+                }
+            }
+        }
     }
 
     /// Arranque opt-in puro (Juan): el daemon solo escribe lo que el usuario
@@ -428,15 +466,7 @@ impl DaemonRunner {
             }
         }
 
-        if let Some(limit) = config.battery_charge_limit {
-            if self.backend.threshold.supports_threshold() {
-                if let Err(e) = self.backend.threshold.set_charge_threshold(limit) {
-                    warn!("Failed to apply battery charge threshold: {}", e);
-                } else {
-                    info!("Battery charge threshold locked at {}%", limit);
-                }
-            }
-        }
+        self.enforce_charge_limit(config);
     }
 
     /// Opt-in battery telemetry. With `battery_health_log` and `battery_temp_warn_c`

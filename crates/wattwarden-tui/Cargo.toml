@@ -13,7 +13,6 @@ wattwarden-platform = { path = "../wattwarden-platform" }
 wattwarden-daemon = { path = "../wattwarden-daemon" }
 ratatui.workspace = true
 crossterm.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]

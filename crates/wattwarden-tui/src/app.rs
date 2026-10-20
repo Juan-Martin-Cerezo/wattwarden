@@ -1,11 +1,13 @@
 // Only Linux (systemd) shells out from the dashboard; macOS
 // drives everything through its backend.
+use std::collections::VecDeque;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use std::time::{Duration, Instant};
 use wattwarden_core::*;
 use wattwarden_daemon::{spawn, PidManager};
+use wattwarden_platform::privilege::{rerun_elevated, Escalation};
 use wattwarden_platform::PlatformBackend as LinuxBackend;
 
 /// Default and bounds for the telemetry graph sampling interval.
@@ -19,6 +21,20 @@ const DAEMON_STATE_TTL: Duration = Duration::from_secs(1);
 
 const VM_WRITEBACK_MIN_CENTISECS: i64 = 100;
 const VM_WRITEBACK_MAX_CENTISECS: i64 = 6000;
+
+/// Longest a rendered menu row may go without re-reading hardware state.
+const ROWS_TTL: Duration = Duration::from_millis(500);
+/// Telemetry samples kept for the graph.
+const HISTORY_CAPACITY: usize = 400;
+
+/// Render-ready copy of one menu row. Cached so the 10 fps redraw loop does
+/// not hammer sysfs once per visible row per frame.
+#[derive(Debug, Clone, Default)]
+pub struct RowInfo {
+    pub name: String,
+    pub value: String,
+    pub active: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionItem {
@@ -62,6 +78,8 @@ impl ActionItem {
     }
 
     /// Manual hardware adjustment pauses the background daemon to prioritize user control.
+    /// `ChargeLimit` is exempt on purpose: the daemon *enforces* the configured
+    /// ceiling every tick, so killing it would defeat the limit.
     fn stops_daemon_on_adjust(&self) -> bool {
         matches!(
             self,
@@ -71,7 +89,6 @@ impl ActionItem {
                 | ActionItem::RaplPl1
                 | ActionItem::RaplPl2
                 | ActionItem::Turbo
-                | ActionItem::ChargeLimit
                 | ActionItem::KbdBacklight
                 | ActionItem::Bluetooth
                 | ActionItem::WifiEnable
@@ -247,10 +264,12 @@ fn build_menu(os_name: &str) -> Vec<ActionItem> {
 pub struct App {
     pub backend: LinuxBackend,
     pub config: Config,
-    pub history: Vec<f64>,
+    pub history: VecDeque<f64>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub items: Vec<ActionItem>,
+    /// Cached per-row text; refreshed on mutation and at most every `ROWS_TTL`.
+    pub rows: Vec<RowInfo>,
     pub confirm_extreme: bool,
     pub toast: Option<(String, Instant)>,
     pub should_quit: bool,
@@ -261,6 +280,10 @@ pub struct App {
     /// reflects whether the daemon is actively running rather than `config.profile`.
     daemon_active: bool,
     daemon_checked: Instant,
+    /// Row cache control: rebuild on next render after a mutation, otherwise
+    /// at most once per `ROWS_TTL`.
+    rows_dirty: bool,
+    rows_checked: Instant,
 }
 
 impl App {
@@ -274,9 +297,10 @@ impl App {
         Self {
             backend,
             config,
-            history: Vec::with_capacity(400),
+            history: VecDeque::with_capacity(HISTORY_CAPACITY),
             selected: initial_selected,
             scroll_offset: 0,
+            rows: Vec::new(),
             items,
             confirm_extreme: false,
             toast: None,
@@ -285,6 +309,8 @@ impl App {
             refresh_delay: DEFAULT_REFRESH_DELAY,
             daemon_active: false,
             daemon_checked: Instant::now() - DAEMON_STATE_TTL,
+            rows_dirty: true,
+            rows_checked: Instant::now() - ROWS_TTL,
         }
     }
 
@@ -379,11 +405,248 @@ impl App {
         self.last_update = Instant::now();
         if let Ok(watts) = self.backend.battery.consumption_watts() {
             if watts > 0.0 {
-                self.history.push(watts);
-                if self.history.len() > 400 {
-                    self.history.remove(0);
+                self.history.push_back(watts);
+                if self.history.len() > HISTORY_CAPACITY {
+                    self.history.pop_front();
                 }
             }
+        }
+    }
+
+    /// Rebuilds the cached menu rows when stale (`ROWS_TTL`) or dirty (after a
+    /// mutation). Called once per frame by the renderer.
+    pub fn refresh_rows_if_stale(&mut self) {
+        if !self.rows_dirty && self.rows_checked.elapsed() < ROWS_TTL {
+            return;
+        }
+        self.rows = self.items.iter().map(|i| self.row_info(i)).collect();
+        self.rows_dirty = false;
+        self.rows_checked = Instant::now();
+    }
+
+    /// Marks the cached rows stale; next render re-reads the hardware.
+    pub fn mark_rows_dirty(&mut self) {
+        self.rows_dirty = true;
+    }
+
+    /// Render-ready copy of one menu row (name, value, highlighted).
+    fn row_info(&self, item: &ActionItem) -> RowInfo {
+        use crate::ui::{display_bool, format_number};
+        let (name, value, active) = match item {
+            ActionItem::Header(title) => (title.clone(), String::new(), false),
+            ActionItem::ProfilePerformance => (
+                "⚡ Performance Mode".to_string(),
+                if self.config.profile == Some(PowerProfile::Performance) {
+                    "[ACTIVE]".into()
+                } else {
+                    "[EXECUTE]".into()
+                },
+                self.config.profile == Some(PowerProfile::Performance),
+            ),
+            ActionItem::ProfileExtreme => (
+                "🔋 Extreme Mode".to_string(),
+                if self.config.profile == Some(PowerProfile::Extreme) {
+                    "[ACTIVE]".into()
+                } else {
+                    "[EXECUTE]".into()
+                },
+                self.config.profile == Some(PowerProfile::Extreme),
+            ),
+            ActionItem::ProfileAutoExtreme => (
+                "⚡ Auto Extreme Mode".to_string(),
+                // Derived from active daemon status, not config profile.
+                if self.is_daemon_active() {
+                    "[ACTIVE]".into()
+                } else {
+                    "[EXECUTE]".into()
+                },
+                self.is_daemon_active(),
+            ),
+            ActionItem::AutoExtremeLevel => (
+                "Auto Extreme Level".to_string(),
+                format!(
+                    "[{}]",
+                    self.config.auto_extreme_level.to_string().to_uppercase()
+                ),
+                false,
+            ),
+            ActionItem::AutoBrightness => (
+                "Auto Brightness".to_string(),
+                if self.config.auto_brightness {
+                    "[ACTIVE]".into()
+                } else {
+                    "[OFF]".into()
+                },
+                self.config.auto_brightness,
+            ),
+            ActionItem::ProfileRestore => {
+                ("♻  Restore Mode".to_string(), "[EXECUTE]".into(), false)
+            }
+            ActionItem::HealthLine => {
+                let h = self.backend.battery.health().unwrap_or_default();
+                let val = match h.health_pct() {
+                    Some(pct) => format!("[{pct}%]"),
+                    None => "[N/A]".to_string(),
+                };
+                ("Battery Health".to_string(), val, false)
+            }
+            ActionItem::CycleLine => {
+                let h = self.backend.battery.health().unwrap_or_default();
+                let val = match h.cycle_count {
+                    Some(c) => format!("[{c}]"),
+                    None => "[N/A]".to_string(),
+                };
+                ("Battery Cycles".to_string(), val, false)
+            }
+            ActionItem::TempLine => {
+                let h = self.backend.battery.health().unwrap_or_default();
+                let val = match h.temp_c {
+                    Some(t) => format!("[{t:.1}°C]"),
+                    None => "[N/A]".to_string(),
+                };
+                ("Battery Temp".to_string(), val, false)
+            }
+            ActionItem::ChargeLimit => (
+                "Charge Limit".to_string(),
+                match self.config.battery_charge_limit {
+                    Some(limit) => format!("[{limit}%]"),
+                    None => "[OFF]".into(),
+                },
+                self.config.battery_charge_limit.is_some(),
+            ),
+            ActionItem::Calibration => (
+                "Calibration".to_string(),
+                calibration_display(self.calibration_state().as_ref()),
+                false,
+            ),
+            ActionItem::Calibrate => ("Calibrate".to_string(), "[EXECUTE]".into(), false),
+            ActionItem::CalibRestore => ("Calib Restore".to_string(), "[EXECUTE]".into(), false),
+            ActionItem::Cores => {
+                let online = self.backend.cpu.online_cores().unwrap_or(1);
+                let total = self.backend.cpu.num_cpus();
+                (
+                    "Active Cores".to_string(),
+                    format!("[{} / {}]", online, total),
+                    false,
+                )
+            }
+            ActionItem::FreqLimit => {
+                let freq = self.backend.cpu.freq_limit().unwrap_or(0);
+                (
+                    "CPU Freq (MHz)".to_string(),
+                    format_number(freq as i64),
+                    false,
+                )
+            }
+            ActionItem::GpuFreq => {
+                let g = self
+                    .backend
+                    .gpu
+                    .as_ref()
+                    .and_then(|gpu| gpu.gpu_freq().ok())
+                    .unwrap_or(0);
+                (
+                    "Freq iGPU (MHz)".to_string(),
+                    format_number(g as i64),
+                    false,
+                )
+            }
+            ActionItem::RaplPl1 => {
+                let pl1 = self
+                    .backend
+                    .rapl
+                    .as_ref()
+                    .and_then(|r| r.pl1_watts().ok())
+                    .unwrap_or(0);
+                ("RAPL PL1 (W)".to_string(), format_number(pl1 as i64), false)
+            }
+            ActionItem::RaplPl2 => {
+                let pl2 = self
+                    .backend
+                    .rapl
+                    .as_ref()
+                    .and_then(|r| r.pl2_watts().ok())
+                    .unwrap_or(0);
+                ("RAPL PL2 (W)".to_string(), format_number(pl2 as i64), false)
+            }
+            ActionItem::Turbo => {
+                let t = self.backend.cpu.turbo_enabled().unwrap_or(false);
+                ("Turbo Boost".to_string(), display_bool(t), t)
+            }
+            ActionItem::Epp => {
+                let epp = self
+                    .backend
+                    .cpu
+                    .energy_performance_preference()
+                    .unwrap_or_else(|_| "N/A".into());
+                ("Energy Perf Pref".to_string(), format!("[{}]", epp), false)
+            }
+            ActionItem::Aspm => {
+                let policy = self
+                    .backend
+                    .aspm
+                    .as_ref()
+                    .and_then(|a| a.aspm_policy().ok())
+                    .unwrap_or_else(|| "default".into());
+                (
+                    "PCIe ASPM Policy".to_string(),
+                    format!("[{}]", policy),
+                    false,
+                )
+            }
+            ActionItem::Brightness => {
+                let b = self
+                    .backend
+                    .backlight
+                    .as_ref()
+                    .and_then(|bl| bl.brightness_percent().ok())
+                    .unwrap_or(0);
+                // Percentage label contains the % sign; value is rendered as bare number.
+                ("LCD Brightness (%)".to_string(), format!("[{b}]"), false)
+            }
+            ActionItem::KbdBacklight => {
+                let k = self.backend.peripherals.kbd_backlight().unwrap_or(false);
+                ("Keyboard Light".to_string(), display_bool(k), k)
+            }
+            ActionItem::Bluetooth => {
+                let bt = self
+                    .backend
+                    .peripherals
+                    .bluetooth_enabled()
+                    .unwrap_or(false);
+                ("Bluetooth".to_string(), display_bool(bt), bt)
+            }
+            ActionItem::WifiEnable => {
+                let w = self.backend.peripherals.wifi_enabled().unwrap_or(false);
+                ("WiFi Enable".to_string(), display_bool(w), w)
+            }
+            ActionItem::WifiPowerSave => {
+                let ps = self.backend.tweaks.wifi_power_save().unwrap_or(false);
+                ("WiFi Power Save".to_string(), display_bool(ps), ps)
+            }
+            ActionItem::AudioPowerSave => {
+                let aps = self.backend.tweaks.audio_power_save().unwrap_or(false);
+                ("Audio Power Save".to_string(), display_bool(aps), aps)
+            }
+            ActionItem::Autosuspend => {
+                let a = self.backend.tweaks.autosuspend().unwrap_or(false);
+                ("Autosuspend PCI/USB".to_string(), display_bool(a), a)
+            }
+            ActionItem::Watchdog => {
+                let wd = self.backend.tweaks.nmi_watchdog().unwrap_or(false);
+                ("Watchdog Kernel".to_string(), display_bool(wd), wd)
+            }
+            ActionItem::VmWriteback => {
+                // Raw centisecond value displayed with legacy seconds label.
+                let wb = self.backend.tweaks.vm_writeback_centisecs();
+                ("VM Writeback (s)".to_string(), format!("[{}]", wb), false)
+            }
+            ActionItem::ProcessPurge => ("Process Purge".to_string(), "[EXECUTE]".into(), false),
+        };
+        RowInfo {
+            name,
+            value,
+            active,
         }
     }
 
@@ -487,7 +750,6 @@ impl App {
                 self.restore("RESTORE MODE ACTIVATED");
             }
             ActionItem::ChargeLimit => {
-                self.stop_daemon();
                 let next = if self.config.battery_charge_limit.is_some() {
                     None
                 } else {
@@ -538,20 +800,50 @@ impl App {
 
     /// Persists and applies the charge ceiling. `None` only clears WattWarden's
     /// setting without touching sysfs (the active threshold may come from the BIOS).
+    ///
+    /// The limit has to land *always*: direct write when privileged; otherwise
+    /// the background daemon (root) re-asserts it from config on its next tick;
+    /// otherwise a one-shot elevated helper applies it (`sudo -n`, then
+    /// `pkexec`) — all without ever disturbing the TUI frame.
     fn set_charge_limit(&mut self, limit: Option<u8>) {
         self.config.battery_charge_limit = limit;
         let _ = self.config.save(None);
-        match limit {
-            Some(n) => {
-                if self.backend.threshold.supports_threshold()
-                    && self.backend.threshold.set_charge_threshold(n).is_ok()
-                {
-                    self.set_toast(format!("CHARGE LIMIT: {n}%"));
-                } else {
-                    self.set_toast("CHARGE LIMIT: SAVED (threshold not exposed)");
-                }
-            }
-            None => self.set_toast("CHARGE LIMIT: OFF (threshold untouched)"),
+        let Some(n) = limit else {
+            self.set_toast("CHARGE LIMIT: OFF (threshold untouched)");
+            return;
+        };
+
+        let applied = if self.backend.threshold.supports_threshold() {
+            self.backend.threshold.set_charge_threshold(n).is_ok()
+        } else {
+            false
+        };
+        if applied {
+            self.set_toast(format!("CHARGE LIMIT: {n}% (active)"));
+            return;
+        }
+
+        // No privilege (or no node yet): the daemon enforces the saved limit
+        // every tick, so hand over to it when it is running.
+        self.refresh_daemon_state();
+        if self.daemon_active {
+            self.set_toast(format!("CHARGE LIMIT: {n}% (daemon enforcing)"));
+            return;
+        }
+
+        let argv = [
+            std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "wattwarden".into()),
+            "charge-limit".to_string(),
+            n.to_string(),
+        ];
+        if matches!(rerun_elevated(&argv, false), Escalation::Ran(0)) {
+            self.set_toast(format!("CHARGE LIMIT: {n}% (active)"));
+        } else {
+            self.set_toast(format!(
+                "CHARGE LIMIT: {n}% SAVED - run: sudo wattwarden charge-limit {n}"
+            ));
         }
     }
 
@@ -861,7 +1153,6 @@ mod tests {
             ActionItem::RaplPl1,
             ActionItem::RaplPl2,
             ActionItem::Turbo,
-            ActionItem::ChargeLimit,
             ActionItem::KbdBacklight,
             ActionItem::Bluetooth,
             ActionItem::WifiEnable,
@@ -878,6 +1169,7 @@ mod tests {
         }
 
         // Brightness turns auto-brightness off instead; EPP/ASPM are read-only.
+        // ChargeLimit keeps the daemon alive: it *enforces* the saved ceiling.
         for item in [
             ActionItem::Brightness,
             ActionItem::AutoBrightness,
@@ -885,6 +1177,7 @@ mod tests {
             ActionItem::CycleLine,
             ActionItem::TempLine,
             ActionItem::Calibration,
+            ActionItem::ChargeLimit,
             ActionItem::Epp,
             ActionItem::Aspm,
             ActionItem::ProcessPurge,

@@ -1,4 +1,4 @@
-use crate::app::{calibration_display, ActionItem, App};
+use crate::app::{ActionItem, App};
 use ratatui::{
     buffer::Buffer,
     style::{Color, Modifier, Style},
@@ -18,52 +18,105 @@ const ASCII_LOGO: &[&str] = &[
 
 const BLOCKS: [char; 9] = [' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
+/// Minimum terminal the dashboard lays out for; below this only the notice shows.
+const MIN_WIDTH: usize = 60;
+const MIN_HEIGHT: usize = 14;
+
 /// Summary line format across all platforms, displaying OS, battery status, time estimate, and wattage.
 fn summary_line(os: &str, battery_pct: u8, charging: bool, est: &str, watts: f64) -> String {
     let status = if charging { "Charging" } else { "Discharging" };
     format!("OS: {os} | Battery: {battery_pct}% ({status}) | Est: {est} | Power: {watts:.1}W")
 }
 
+/// Writes `text` at (x, y), clipped to the buffer edge (never overflows).
 fn set_str(buf: &mut Buffer, x: usize, y: usize, text: &str, style: Style) {
     let w = buf.area.width as usize;
     let h = buf.area.height as usize;
     if x >= w || y >= h {
         return;
     }
-    buf.set_string(x as u16, y as u16, text, style);
+    let avail = w - x;
+    let clipped: String = text.chars().take(avail).collect();
+    buf.set_string(x as u16, y as u16, clipped, style);
+}
+
+/// Upper bound of the wattage axis: the smallest "nice" ceiling that fits the
+/// peak draw with 20% headroom. Machines that burst past 15 W simply grow the
+/// scale (15 → 20 → 25 → … → 500 W); quiet machines keep a fine-grained axis
+/// instead of a permanently half-empty plot.
+pub fn graph_scale(peak_watts: f64) -> f64 {
+    const STEPS: [f64; 16] = [
+        5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0, 200.0,
+        300.0, 500.0,
+    ];
+    if peak_watts <= 0.0 {
+        return 15.0;
+    }
+    let target = peak_watts * 1.2;
+    STEPS
+        .iter()
+        .copied()
+        .find(|step| *step >= target)
+        .unwrap_or(*STEPS.last().expect("non-empty"))
+}
+
+/// Vertical stacking of the content region: the plot takes a share of the rows
+/// (never more than half, never less than 3), the menu keeps the rest. The
+/// `+ 2` covers the plot's title and axis rows. Below the smallest stack
+/// (plot + caption + axis + one menu row) the plot is dropped: `(0, h)`.
+fn split_vertical(content_h: usize) -> (usize, usize) {
+    if content_h < 6 {
+        return (0, content_h.max(1));
+    }
+    let raw = if content_h >= 24 {
+        (content_h / 2).min(20)
+    } else if content_h >= 14 {
+        content_h / 3
+    } else {
+        content_h / 4
+    };
+    let graph_h = raw.clamp(3, content_h.saturating_sub(3));
+    let menu_h = content_h.saturating_sub(graph_h + 2).max(1);
+    (graph_h, menu_h)
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.refresh_rows_if_stale();
+
     let area = f.area();
     let w = area.width as usize;
     let h = area.height as usize;
 
-    if w < 70 || h < 20 {
-        let msg = "PLEASE RESIZE TERMINAL (Minimum size: 70x20)";
+    if w < MIN_WIDTH || h < MIN_HEIGHT {
+        let msg = format!("PLEASE RESIZE TERMINAL (Minimum size: {MIN_WIDTH}x{MIN_HEIGHT})");
         let msg_x = (w.saturating_sub(msg.len())) / 2;
         let msg_y = h / 2;
         let style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-        set_str(f.buffer_mut(), msg_x, msg_y, msg, style);
+        set_str(f.buffer_mut(), msg_x, msg_y, &msg, style);
         return;
     }
 
     let buf = f.buffer_mut();
-
-    // 1. Draw Centered ASCII Banner
-    let art_y = 1;
-    let mut art_x = (w.saturating_sub(68)) / 2;
-    if art_x < 1 {
-        art_x = 1;
-    }
     let title_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    for (i, line) in ASCII_LOGO.iter().enumerate() {
-        set_str(buf, art_x, art_y + i, line, title_style);
+    // 1. Header: full banner when it fits, compact title otherwise.
+    let mut y = 1;
+    if h >= 28 && w >= 72 {
+        let art_x = w.saturating_sub(68) / 2;
+        for (i, line) in ASCII_LOGO.iter().enumerate() {
+            set_str(buf, art_x, y + i, line, title_style);
+        }
+        y += ASCII_LOGO.len() + 1;
+    } else {
+        let title = "WATTWARDEN";
+        let tx = w.saturating_sub(title.len()) / 2;
+        set_str(buf, tx, y, title, title_style);
+        y += 2;
     }
 
-    // 2. Centered Status Summary Line
+    // 2. Centered status summary line.
     let summary = summary_line(
         app.backend.os_name(),
         app.backend.battery.battery_percentage().unwrap_or(0),
@@ -74,58 +127,53 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .unwrap_or_else(|_| "N/A".into()),
         app.backend.battery.consumption_watts().unwrap_or(0.0),
     );
-    let info_y = art_y + ASCII_LOGO.len() + 1;
-    let info_x = (w.saturating_sub(summary.len())) / 2;
+    let info_x = w.saturating_sub(summary.len()) / 2;
     set_str(
         buf,
         info_x,
-        info_y,
+        y,
         &summary,
         Style::default().add_modifier(Modifier::BOLD),
     );
+    y += 2;
 
-    // 3. Layout Dimensions Calculation
-    let is_horizontal = w >= 130;
-    let (menu_x, menu_y, menu_w, graph_x, graph_y, graph_w, graph_h) = if is_horizontal {
-        let mx = 4;
-        let my = info_y + 2;
-        let mw = 50;
-        let gx = mx + mw + 4;
-        let gy = info_y + 2;
-        let gw = w.saturating_sub(gx + 4);
-        let gh = h.saturating_sub(gy + 4);
-        (mx, my, mw, gx, gy, gw, gh)
-    } else {
-        let gx = 4;
-        let gy = info_y + 2;
-        let gw = w.saturating_sub(8);
-        let needed_for_menu = app.items.len();
-        let available = h.saturating_sub(gy + 4);
-        let mut gh = if available > needed_for_menu + 10 {
-            available - needed_for_menu
+    // 3. Content budget: everything up to one row above the footer.
+    let content_h = h.saturating_sub(1).saturating_sub(y);
+    let is_horizontal = w >= 110;
+
+    let (menu_x, menu_y, menu_w, menu_h, graph_x, graph_y, graph_w, graph_h) = if is_horizontal {
+        let menu_w = (w / 2).clamp(40, 52);
+        let menu_x = 2;
+        let graph_x = menu_x + menu_w + 2;
+        let graph_w = w.saturating_sub(graph_x + 2);
+        // Plot + title + axis need at least 34 columns to be readable.
+        let (graph_w, graph_h) = if graph_w >= 34 {
+            (graph_w, content_h.saturating_sub(2))
         } else {
-            8
+            (0, 0)
         };
-        if gh > 15 {
-            gh = 15;
-        }
-        let mx = 4;
-        let my = gy + gh + 2;
-        let mw = w.saturating_sub(8);
-        (mx, my, mw, gx, gy, gw, gh)
+        (menu_x, y, menu_w, content_h, graph_x, y, graph_w, graph_h)
+    } else {
+        let (plot_h, menu_h) = split_vertical(content_h);
+        let menu_w = w.saturating_sub(4);
+        // Without a plot the menu starts at the top of the content region.
+        let menu_y = if plot_h >= 3 { y + plot_h + 2 } else { y };
+        (2, menu_y, menu_w, menu_h, 2, y, w.saturating_sub(4), plot_h)
     };
 
-    // 4. Draw Real-Time Bar Graph
-    draw_bar_graph(buf, graph_x, graph_y, graph_w, graph_h, &app.history, 15.0);
+    // 4. Real-time power plot (adaptive wattage scale).
+    if graph_h >= 3 && graph_w >= 34 {
+        draw_graph_block(buf, app, graph_x, graph_y, graph_w, graph_h);
+    }
 
-    // 5. Draw Menu with Viewport Scrolling and Scrollbar
-    draw_menu(buf, app, menu_x, menu_y, menu_w, h);
+    // 5. Menu with viewport scrolling and scrollbar.
+    draw_menu(buf, app, menu_x, menu_y, menu_w, menu_h);
 
-    // 6. Draw Toast Popup (if active)
+    // 6. Toast popup (if active).
     if let Some((msg, time)) = &app.toast {
         if time.elapsed() < Duration::from_secs(3) {
             let toast_str = format!(" {} ", msg);
-            let toast_x = (w.saturating_sub(toast_str.len())) / 2;
+            let toast_x = w.saturating_sub(toast_str.len()) / 2;
             let toast_y = h.saturating_sub(3);
             set_str(
                 buf,
@@ -140,13 +188,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // 7. Draw Extreme Mode Confirmation Modal
+    // 7. Extreme mode confirmation modal.
     if app.confirm_extreme {
         draw_extreme_modal(buf, w, h);
     }
 
-    // 8. Draw Footer Controls Help
-    let footer_text = "[UP/DOWN] Navigate | [L/R] Adjust | [ENTER] Apply | [R] Restore | [Q] Quit";
+    // 8. Footer controls help.
+    let footer_text =
+        "[UP/DOWN] Navigate | [L/R] Adjust | [ENTER] Apply | [R] Restore | [+/-] Speed | [Q] Quit";
     set_str(
         buf,
         2,
@@ -154,6 +203,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         footer_text,
         Style::default().fg(Color::DarkGray),
     );
+}
+
+/// Power plot block: one caption row, the bars, the axis and the watt scale.
+fn draw_graph_block(buf: &mut Buffer, app: &mut App, x: usize, y: usize, w: usize, h: usize) {
+    let data = app.history.make_contiguous();
+    let peak = data.iter().copied().fold(0.0_f64, f64::max);
+    let scale = graph_scale(peak);
+    let caption = format!(" POWER DRAW - scale {:.0}W - peak {:.1}W ", scale, peak);
+    set_str(
+        buf,
+        x,
+        y,
+        &caption,
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
+    draw_bar_graph(buf, x, y + 1, w, h, data, scale);
+}
+
+/// Scale-relative band colour: top third red, middle yellow, bottom green.
+fn band_color(ratio: f64) -> Color {
+    if ratio >= 2.0 / 3.0 {
+        Color::Red
+    } else if ratio >= 1.0 / 3.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
 }
 
 fn draw_bar_graph(
@@ -165,7 +243,7 @@ fn draw_bar_graph(
     data_list: &[f64],
     graph_max: f64,
 ) {
-    if width < 20 || height < 3 {
+    if width < 34 || height < 3 {
         return;
     }
 
@@ -217,13 +295,7 @@ fn draw_bar_graph(
             let char_idx = if dots_in_row >= 8 { 8 } else { dots_in_row };
 
             if char_idx > 0 {
-                let color = if y_offset > height.saturating_sub(2) {
-                    Color::Red
-                } else if y_offset > height / 2 {
-                    Color::Yellow
-                } else {
-                    Color::Green
-                };
+                let color = band_color((y_offset + 1) as f64 / height as f64);
                 let ch = BLOCKS[char_idx];
                 if let Some(cell) = buf.cell_mut((x_pos as u16, screen_y as u16)) {
                     cell.set_char(ch).set_fg(color);
@@ -242,13 +314,7 @@ fn draw_bar_graph(
     for y_offset in 0..height {
         let screen_y = start_y + height - 1 - y_offset;
         let val_label = (y_offset as f64) * step_val;
-        let color = if val_label >= 12.0 {
-            Color::Red
-        } else if val_label >= 6.0 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
+        let color = band_color(val_label / graph_max);
 
         set_str(
             buf,
@@ -268,7 +334,7 @@ fn draw_bar_graph(
 }
 
 /// Formats boolean states as `[ACTIVE]` or `[OFF]`.
-fn display_bool(value: bool) -> String {
+pub(crate) fn display_bool(value: bool) -> String {
     if value {
         "[ACTIVE]".into()
     } else {
@@ -277,203 +343,11 @@ fn display_bool(value: bool) -> String {
 }
 
 /// Formats numeric metrics as `[<n>]` or `[N/A]` when non-positive.
-fn format_number(value: i64) -> String {
+pub(crate) fn format_number(value: i64) -> String {
     if value <= 0 {
         "[N/A]".into()
     } else {
         format!("[{value}]")
-    }
-}
-
-fn get_item_info(item: &ActionItem, app: &App) -> (&'static str, String, bool) {
-    match item {
-        ActionItem::Header(_) => ("", "".into(), false),
-        ActionItem::ProfilePerformance => (
-            "⚡ Performance Mode",
-            if app.config.profile == Some(PowerProfile::Performance) {
-                "[ACTIVE]".into()
-            } else {
-                "[EXECUTE]".into()
-            },
-            app.config.profile == Some(PowerProfile::Performance),
-        ),
-        ActionItem::ProfileExtreme => (
-            "🔋 Extreme Mode",
-            if app.config.profile == Some(PowerProfile::Extreme) {
-                "[ACTIVE]".into()
-            } else {
-                "[EXECUTE]".into()
-            },
-            app.config.profile == Some(PowerProfile::Extreme),
-        ),
-        ActionItem::ProfileAutoExtreme => (
-            "⚡ Auto Extreme Mode",
-            // Derived from active daemon status, not config profile.
-            if app.is_daemon_active() {
-                "[ACTIVE]".into()
-            } else {
-                "[EXECUTE]".into()
-            },
-            app.is_daemon_active(),
-        ),
-        ActionItem::AutoExtremeLevel => (
-            "Auto Extreme Level",
-            format!(
-                "[{}]",
-                app.config.auto_extreme_level.to_string().to_uppercase()
-            ),
-            false,
-        ),
-        ActionItem::AutoBrightness => (
-            "Auto Brightness",
-            if app.config.auto_brightness {
-                "[ACTIVE]".into()
-            } else {
-                "[OFF]".into()
-            },
-            app.config.auto_brightness,
-        ),
-        ActionItem::ProfileRestore => ("♻  Restore Mode", "[EXECUTE]".into(), false),
-        ActionItem::HealthLine => {
-            let h = app.backend.battery.health().unwrap_or_default();
-            let val = match h.health_pct() {
-                Some(pct) => format!("[{pct}%]"),
-                None => "[N/A]".to_string(),
-            };
-            ("Battery Health", val, false)
-        }
-        ActionItem::CycleLine => {
-            let h = app.backend.battery.health().unwrap_or_default();
-            let val = match h.cycle_count {
-                Some(c) => format!("[{c}]"),
-                None => "[N/A]".to_string(),
-            };
-            ("Battery Cycles", val, false)
-        }
-        ActionItem::TempLine => {
-            let h = app.backend.battery.health().unwrap_or_default();
-            let val = match h.temp_c {
-                Some(t) => format!("[{t:.1}°C]"),
-                None => "[N/A]".to_string(),
-            };
-            ("Battery Temp", val, false)
-        }
-        ActionItem::ChargeLimit => (
-            "Charge Limit",
-            match app.config.battery_charge_limit {
-                Some(limit) => format!("[{limit}%]"),
-                None => "[OFF]".into(),
-            },
-            app.config.battery_charge_limit.is_some(),
-        ),
-        ActionItem::Calibration => (
-            "Calibration",
-            calibration_display(app.calibration_state().as_ref()),
-            false,
-        ),
-        ActionItem::Calibrate => ("Calibrate", "[EXECUTE]".into(), false),
-        ActionItem::CalibRestore => ("Calib Restore", "[EXECUTE]".into(), false),
-        ActionItem::Cores => {
-            let online = app.backend.cpu.online_cores().unwrap_or(1);
-            let total = app.backend.cpu.num_cpus();
-            ("Active Cores", format!("[{} / {}]", online, total), false)
-        }
-        ActionItem::FreqLimit => {
-            let freq = app.backend.cpu.freq_limit().unwrap_or(0);
-            ("CPU Freq (MHz)", format_number(freq as i64), false)
-        }
-        ActionItem::GpuFreq => {
-            let g = app
-                .backend
-                .gpu
-                .as_ref()
-                .and_then(|gpu| gpu.gpu_freq().ok())
-                .unwrap_or(0);
-            ("Freq iGPU (MHz)", format_number(g as i64), false)
-        }
-        ActionItem::RaplPl1 => {
-            let pl1 = app
-                .backend
-                .rapl
-                .as_ref()
-                .and_then(|r| r.pl1_watts().ok())
-                .unwrap_or(0);
-            ("RAPL PL1 (W)", format_number(pl1 as i64), false)
-        }
-        ActionItem::RaplPl2 => {
-            let pl2 = app
-                .backend
-                .rapl
-                .as_ref()
-                .and_then(|r| r.pl2_watts().ok())
-                .unwrap_or(0);
-            ("RAPL PL2 (W)", format_number(pl2 as i64), false)
-        }
-        ActionItem::Turbo => {
-            let t = app.backend.cpu.turbo_enabled().unwrap_or(false);
-            ("Turbo Boost", display_bool(t), t)
-        }
-        ActionItem::Epp => {
-            let epp = app
-                .backend
-                .cpu
-                .energy_performance_preference()
-                .unwrap_or_else(|_| "N/A".into());
-            ("Energy Perf Pref", format!("[{}]", epp), false)
-        }
-        ActionItem::Aspm => {
-            let policy = app
-                .backend
-                .aspm
-                .as_ref()
-                .and_then(|a| a.aspm_policy().ok())
-                .unwrap_or_else(|| "default".into());
-            ("PCIe ASPM Policy", format!("[{}]", policy), false)
-        }
-        ActionItem::Brightness => {
-            let b = app
-                .backend
-                .backlight
-                .as_ref()
-                .and_then(|bl| bl.brightness_percent().ok())
-                .unwrap_or(0);
-            // Percentage label contains the % sign; value is rendered as bare number.
-            ("LCD Brightness (%)", format!("[{b}]"), false)
-        }
-        ActionItem::KbdBacklight => {
-            let k = app.backend.peripherals.kbd_backlight().unwrap_or(false);
-            ("Keyboard Light", display_bool(k), k)
-        }
-        ActionItem::Bluetooth => {
-            let bt = app.backend.peripherals.bluetooth_enabled().unwrap_or(false);
-            ("Bluetooth", display_bool(bt), bt)
-        }
-        ActionItem::WifiEnable => {
-            let w = app.backend.peripherals.wifi_enabled().unwrap_or(false);
-            ("WiFi Enable", display_bool(w), w)
-        }
-        ActionItem::WifiPowerSave => {
-            let ps = app.backend.tweaks.wifi_power_save().unwrap_or(false);
-            ("WiFi Power Save", display_bool(ps), ps)
-        }
-        ActionItem::AudioPowerSave => {
-            let aps = app.backend.tweaks.audio_power_save().unwrap_or(false);
-            ("Audio Power Save", display_bool(aps), aps)
-        }
-        ActionItem::Autosuspend => {
-            let a = app.backend.tweaks.autosuspend().unwrap_or(false);
-            ("Autosuspend PCI/USB", display_bool(a), a)
-        }
-        ActionItem::Watchdog => {
-            let wd = app.backend.tweaks.nmi_watchdog().unwrap_or(false);
-            ("Watchdog Kernel", display_bool(wd), wd)
-        }
-        ActionItem::VmWriteback => {
-            // Raw centisecond value displayed with legacy seconds label.
-            let wb = app.backend.tweaks.vm_writeback_centisecs();
-            ("VM Writeback (s)", format!("[{}]", wb), false)
-        }
-        ActionItem::ProcessPurge => ("Process Purge", "[EXECUTE]".into(), false),
     }
 }
 
@@ -483,9 +357,9 @@ fn draw_menu(
     menu_x: usize,
     menu_y: usize,
     menu_w: usize,
-    h: usize,
+    menu_h: usize,
 ) {
-    let visible_items = h.saturating_sub(menu_y + 4).max(1);
+    let visible_items = menu_h.max(1);
 
     // Dynamic scroll bounds
     if app.selected < app.scroll_offset {
@@ -512,11 +386,12 @@ fn draw_menu(
 
     for i in 0..visible_items {
         let idx = app.scroll_offset + i;
-        if idx >= app.items.len() {
+        if idx >= app.items.len() || idx >= app.rows.len() {
             break;
         }
 
         let item = &app.items[idx];
+        let row = &app.rows[idx];
         let y = menu_y + i;
 
         if let ActionItem::Header(header_title) = item {
@@ -532,30 +407,30 @@ fn draw_menu(
             continue;
         }
 
-        let (name, val_str, is_active) = get_item_info(item, app);
         let max_name_len = menu_w.saturating_sub(20).max(5);
-        let truncated_name = if name.chars().count() > max_name_len {
+        let truncated_name = if row.name.chars().count() > max_name_len {
             format!(
                 "{}...",
-                name.chars()
+                row.name
+                    .chars()
                     .take(max_name_len.saturating_sub(3))
                     .collect::<String>()
             )
         } else {
-            name.to_string()
+            row.name.clone()
         };
 
         let is_selected = idx == app.selected;
         let line_text = format!(
             " > {:<width$} {:>15} ",
             truncated_name,
-            val_str,
+            row.value,
             width = max_name_len
         );
         let normal_text = format!(
             "   {:<width$} {:>15} ",
             truncated_name,
-            val_str,
+            row.value,
             width = max_name_len
         );
 
@@ -570,7 +445,7 @@ fn draw_menu(
                     .bg(Color::White)
                     .add_modifier(Modifier::BOLD),
             );
-        } else if is_active {
+        } else if row.active {
             set_str(
                 buf,
                 menu_x,
@@ -749,5 +624,65 @@ mod tests {
             summary_line("macOS", 100, true, "Charging", 0.0),
             "OS: macOS | Battery: 100% (Charging) | Est: Charging | Power: 0.0W"
         );
+    }
+
+    /// The wattage axis adapts to the machine: above 15 W it grows to the next
+    /// nice step, quiet machines keep a finer axis, and every peak fits with
+    /// headroom (never clipped).
+    #[test]
+    fn graph_scale_adapts_above_and_below_15w() {
+        assert_eq!(
+            graph_scale(0.0),
+            15.0,
+            "empty history keeps the old default"
+        );
+        assert_eq!(graph_scale(4.0), 5.0);
+        assert_eq!(graph_scale(8.0), 10.0);
+        assert_eq!(graph_scale(12.0), 15.0);
+        assert_eq!(graph_scale(16.0), 20.0, "a 16 W burst must not clip");
+        assert_eq!(graph_scale(14.0), 20.0);
+        assert_eq!(graph_scale(38.0), 50.0);
+        assert_eq!(graph_scale(115.0), 150.0);
+        assert_eq!(graph_scale(400.0), 500.0);
+        assert_eq!(graph_scale(9999.0), 500.0, "capped at the largest step");
+        // Whatever the peak, the scale leaves headroom for it.
+        for peak in [3.7, 15.0, 21.3, 44.9, 99.0, 150.0, 250.0] {
+            assert!(graph_scale(peak) >= peak, "{peak}W must fit its own scale");
+        }
+    }
+
+    /// The vertical stack always gives the plot room and the menu the rest.
+    #[test]
+    fn split_vertical_reserves_plot_and_menu_rows() {
+        for content_h in 6..=60 {
+            let (graph_h, menu_h) = split_vertical(content_h);
+            assert!(graph_h >= 3, "plot needs at least 3 rows ({content_h})");
+            assert!(menu_h >= 1, "menu needs at least 1 row ({content_h})");
+            assert!(
+                graph_h + 2 + menu_h <= content_h,
+                "rows must fit: content={content_h} graph={graph_h} menu={menu_h}"
+            );
+        }
+        // No room for the plot at all: the menu gets everything.
+        for content_h in 1..6 {
+            let (graph_h, menu_h) = split_vertical(content_h);
+            assert_eq!(graph_h, 0);
+            assert_eq!(menu_h, content_h);
+        }
+        // Roomy terminals give the plot a real share.
+        let (graph_h, menu_h) = split_vertical(40);
+        assert_eq!((graph_h, menu_h), (20, 18));
+    }
+
+    /// `set_str` clips instead of overflowing the buffer.
+    #[test]
+    fn set_str_clips_at_the_buffer_edge() {
+        use ratatui::layout::Rect;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 2));
+        set_str(&mut buf, 6, 0, "OVERFLOWING", Style::default());
+        let line: String = (0u16..10)
+            .map(|x| buf.cell((x, 0u16)).unwrap().symbol().to_string())
+            .collect();
+        assert_eq!(line, "      OVER");
     }
 }

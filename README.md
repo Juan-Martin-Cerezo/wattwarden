@@ -33,7 +33,7 @@ In an era where operating systems and software abstractions often obscure direct
 - **Cross-Platform Support**: Native power-management and hardware control backends for Linux (`sysfs`, RAPL, Netlink sockets, Wayland/Hyprland IPC) and macOS (`pmset`, `ioreg`, `sysctl`).
 - **Persistent Background Daemon**: Auto Extreme Mode and Auto-Brightness run continuously in the background as an OS service (`systemd`, `launchd`, or background runner), keeping your power optimized even after closing the terminal or rebooting.
 - **Intelligent Auto-Brightness**: Dynamically adjusts display brightness based on active window context (Terminals vs Browsers/IDEs) and AC charging state, with instant live toggle and manual override.
-- **Live Telemetry & ASCII Power Graph**: Track battery drain in Watts, charge percentage, BMS thresholds, and estimated battery time remaining in real time via an interactive, zero-overhead TUI power graph.
+- **Live Telemetry & ASCII Power Graph**: Track battery drain in Watts, charge percentage, BMS thresholds, and estimated battery time remaining in real time via an interactive, zero-overhead TUI power graph. The wattage scale adapts to the machine — a 6 W Raspberry Pi and a 100 W gaming laptop each get a graph that fits their own draw — and the whole dashboard reflows to any terminal size.
 - **Zero-Polling Kernel Architecture**: Built in modern Rust without subprocess forks or wasteful sleep loops, achieving virtually 0.00% CPU utilization while idling in the background.
 
 ---
@@ -61,8 +61,13 @@ We provide pre-compiled, static binaries for all major operating systems and arc
 For Linux (`x86_64`, `aarch64`) and macOS (Intel or Apple Silicon), install and configure WattWarden automatically:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Juan-Martin-Cerezo/wattwarden/master/install.sh | bash
 ```
+
+That single command is all you need: it detects your OS and CPU architecture,
+downloads (or compiles) the matching binary, and registers the background
+service (`systemd` on Linux, `launchd` on macOS) — asking for privileges only
+when it actually needs them.
 
 This installer will:
 1. Detect your OS and CPU architecture.
@@ -96,7 +101,7 @@ WattWarden supports both intuitive subcommands and classic flags for rapid termi
 sudo wattwarden                      # Launch interactive TUI Dashboard (Default)
 wattwarden status                   # Check daemon running status & battery health summary
 wattwarden health                   # Full battery health report (capacity, cycles, charge limit)
-sudo wattwarden charge-limit <55-100|off> # Set or clear the battery charge ceiling (e.g. 80%)
+wattwarden charge-limit <55-100|off> # Set or clear the battery charge ceiling (auto-elevates)
 sudo wattwarden calibrate <start|status|done|abort> # Guided battery gauge recalibration
 sudo wattwarden start               # Start background daemon/service
 sudo wattwarden stop                # Stop background daemon/service
@@ -125,14 +130,19 @@ sudo wattwarden daemon              # Run daemon in foreground (for systemd/laun
   recharge) and finish with `sudo wattwarden calibrate done`, which restores the previous
   threshold. Run it every couple of months. The dashboard's **BATTERY** section drives the
   same phases: `Calibrate` starts (or advances) the cycle and `Calib Restore` finishes it.
-- **Charge ceiling**: `sudo wattwarden charge-limit 80` persists the limit and applies it;
+- **Charge ceiling**: `wattwarden charge-limit 80` persists the limit and applies it;
   `charge-limit off` clears WattWarden's setting and *never* touches the hardware threshold
   (it may be managed by the BIOS or another tool). The dashboard's **Charge Limit** row
-  cycles OFF → 55…100 the same way.
+  cycles OFF → 55…100 the same way. The limit is built to *always* land: threshold nodes
+  are re-discovered on every attempt (late-appearing batteries included), the paired
+  start threshold is lowered when it would block the write, every write is read back,
+  and without root the command re-runs itself elevated (`sudo`, `pkexec`) or hands the
+  saved limit to the background daemon, which re-asserts it every tick.
 - **macOS**: health metrics come from `ioreg` (`AppleSmartBattery`: full vs design
-  capacity, cycles, temperature). The charge ceiling and calibration are **Linux-only**:
-  macOS exposes no charge threshold and manages charging natively via Optimized Battery
-  Charging, so `charge-limit`/`calibrate` report unsupported instead of pretending.
+  capacity, cycles, temperature). The charge ceiling works through the [`bclm`](https://github.com/zackelia/bclm)
+  SMC helper when installed (`brew install zackelia/bclm/bclm`) — without it, and for
+  calibration, macOS reports unsupported instead of pretending (its Optimized Battery
+  Charging is the system's own mechanism).
 - **History & temperature** (opt-in, off by default): set `"battery_health_log": true` in
   `/etc/wattwarden/config.json` to append an hourly CSV sample to
   `/var/log/wattwarden-health.log`, and `"battery_temp_warn_c": 45` to get a log warning
