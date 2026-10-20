@@ -764,7 +764,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wattwarden-cli"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "nix",
  "tokio",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "wattwarden-core"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "wattwarden-daemon"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "nix",
  "serde",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "wattwarden-platform"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "nix",
  "serde",
@@ -813,7 +813,7 @@ dependencies = [
 
 [[package]]
 name = "wattwarden-tui"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "crossterm",
  "nix",

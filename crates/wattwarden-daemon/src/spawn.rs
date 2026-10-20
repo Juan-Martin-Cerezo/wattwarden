@@ -60,10 +60,18 @@ pub fn detached_daemon_command(exe: &Path, log_path: &Path) -> io::Result<Comman
 }
 
 /// Spawns the detached daemon process for the current executable.
+///
+/// The child is reaped by a background thread: it detaches (`setsid`) and
+/// normally outlives us, but if it exits while we still run it must not linger
+/// as a zombie — an unreaped child once kept its PID looking alive and wedged
+/// the service lock.
 pub fn spawn_detached_daemon() -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let log_path = daemon_log_path();
-    detached_daemon_command(&exe, &log_path)?.spawn()?;
+    let mut child = detached_daemon_command(&exe, &log_path)?.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 

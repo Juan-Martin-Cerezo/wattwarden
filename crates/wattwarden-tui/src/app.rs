@@ -106,6 +106,21 @@ fn daemon_is_active() -> bool {
     PidManager::new().is_running()
 }
 
+/// One-shot elevated `wattwarden charge-limit <arg>`, safe from inside a raw-mode
+/// TUI: never interactive (`sudo -n`/`pkexec` only), never touches terminal
+/// streams. The elevated command persists the config as root and writes the
+/// threshold — which is what makes the limit work from an unprivileged dashboard.
+fn run_elevated_charge_limit(arg: &str) -> bool {
+    let argv = [
+        std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "wattwarden".into()),
+        "charge-limit".to_string(),
+        arg.to_string(),
+    ];
+    matches!(rerun_elevated(&argv, false), Escalation::Ran(0))
+}
+
 /// Formats a `std::time::Duration` as human-readable string (500ms, 1s, 1.5s ... 10s).
 pub fn format_duration(d: Duration) -> String {
     let ms = d.as_millis();
@@ -342,21 +357,23 @@ impl App {
     /// Stops the running daemon process, unconditionally without altering persisted configuration.
     /// Every manual parameter adjustment pairs with stopping the automated daemon loop.
     pub fn stop_daemon(&mut self) {
-        let pid = PidManager::new();
-        if let Some(p) = pid.read_pid() {
+        let pid_mgr = PidManager::new();
+        if let Some(p) = pid_mgr.read_pid() {
             let _ = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(p),
                 nix::sys::signal::Signal::SIGTERM,
             );
         }
-        pid.release();
+        // No pidfile unlinking here: the instance lock frees itself at process
+        // death (zombies included), and deleting the anchor would let two
+        // daemons lock two different inodes of the same path.
 
         self.daemon_active = false;
         self.daemon_checked = Instant::now();
     }
 
     /// Stops the background daemon: sets `auto_extreme_enabled = false`, stops the
-    /// running process, stops the systemd unit, and releases the PID lock.
+    /// running process and the systemd unit.
     pub fn stop_background_daemon(&mut self) {
         self.config.auto_extreme_enabled = false;
         let _ = self.config.save(None);
@@ -382,8 +399,21 @@ impl App {
         {
             if std::path::Path::new("/etc/systemd/system/wattwarden.service").exists() {
                 let _ = Command::new("systemctl")
+                    .args(["reset-failed", "wattwarden.service"])
+                    .status();
+                let _ = Command::new("systemctl")
                     .args(["restart", "wattwarden.service"])
                     .status();
+                // The unit starts asynchronously: give it time to take the
+                // instance lock before even considering a detached spawn.
+                for _ in 0..10 {
+                    if daemon_is_active() {
+                        self.daemon_active = true;
+                        self.daemon_checked = Instant::now();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
             }
         }
 
@@ -807,43 +837,50 @@ impl App {
     /// `pkexec`) — all without ever disturbing the TUI frame.
     fn set_charge_limit(&mut self, limit: Option<u8>) {
         self.config.battery_charge_limit = limit;
-        let _ = self.config.save(None);
-        let Some(n) = limit else {
+        let saved = self.config.save(None).is_ok();
+
+        if let Some(n) = limit {
+            // Direct write when this process can touch the hardware.
+            if self.backend.threshold.supports_threshold()
+                && self.backend.threshold.set_charge_threshold(n).is_ok()
+            {
+                self.set_toast(format!("CHARGE LIMIT: {n}% (active)"));
+                return;
+            }
+
+            // A running daemon re-asserts the *saved* ceiling every tick.
+            self.refresh_daemon_state();
+            if saved && self.daemon_active {
+                self.set_toast(format!("CHARGE LIMIT: {n}% (daemon enforcing)"));
+                return;
+            }
+
+            // Elevated one-shot: persists the config as root AND writes the
+            // threshold — the only path that works from an unprivileged TUI.
+            if run_elevated_charge_limit(&n.to_string()) {
+                self.config = Config::load_or_default(None);
+                self.set_toast(format!("CHARGE LIMIT: {n}% (active)"));
+            } else if saved {
+                self.set_toast(format!(
+                    "CHARGE LIMIT: {n}% SAVED - run: sudo wattwarden charge-limit {n}"
+                ));
+            } else {
+                self.set_toast(format!(
+                    "CHARGE LIMIT NOT SAVED - run: sudo wattwarden charge-limit {n}"
+                ));
+            }
+            return;
+        }
+
+        // OFF clears only WattWarden's setting — but the config must actually
+        // persist or the daemon re-asserts the old ceiling on its next tick.
+        if saved {
             self.set_toast("CHARGE LIMIT: OFF (threshold untouched)");
-            return;
-        };
-
-        let applied = if self.backend.threshold.supports_threshold() {
-            self.backend.threshold.set_charge_threshold(n).is_ok()
+        } else if run_elevated_charge_limit("off") {
+            self.config = Config::load_or_default(None);
+            self.set_toast("CHARGE LIMIT: OFF (threshold untouched)");
         } else {
-            false
-        };
-        if applied {
-            self.set_toast(format!("CHARGE LIMIT: {n}% (active)"));
-            return;
-        }
-
-        // No privilege (or no node yet): the daemon enforces the saved limit
-        // every tick, so hand over to it when it is running.
-        self.refresh_daemon_state();
-        if self.daemon_active {
-            self.set_toast(format!("CHARGE LIMIT: {n}% (daemon enforcing)"));
-            return;
-        }
-
-        let argv = [
-            std::env::current_exe()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| "wattwarden".into()),
-            "charge-limit".to_string(),
-            n.to_string(),
-        ];
-        if matches!(rerun_elevated(&argv, false), Escalation::Ran(0)) {
-            self.set_toast(format!("CHARGE LIMIT: {n}% (active)"));
-        } else {
-            self.set_toast(format!(
-                "CHARGE LIMIT: {n}% SAVED - run: sudo wattwarden charge-limit {n}"
-            ));
+            self.set_toast("CHARGE LIMIT NOT CLEARED - run: sudo wattwarden charge-limit off");
         }
     }
 

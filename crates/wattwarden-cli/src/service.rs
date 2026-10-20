@@ -14,6 +14,11 @@ const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/wattwarden.service";
 const PLIST_PATH: &str = "/Library/LaunchDaemons/com.wattwarden.daemon.plist";
 
 /// Synchronizes the executing binary to `/usr/local/bin/wattwarden` when running as root.
+///
+/// The replacement is atomic (temp file + rename): an in-place write fails with
+/// ETXTBSY whenever any process — our own service included — is executing the
+/// installed binary, and that failure used to be swallowed, leaving stale
+/// binaries behind.
 pub fn sync_installed_binary() {
     #[cfg(unix)]
     {
@@ -32,9 +37,17 @@ pub fn sync_installed_binary() {
             return;
         };
         let _ = std::fs::create_dir_all("/usr/local/bin");
-        if std::fs::write(INSTALLED_BINARY, bytes).is_ok() {
-            let _ =
-                std::fs::set_permissions(INSTALLED_BINARY, std::fs::Permissions::from_mode(0o755));
+        let tmp = "/usr/local/bin/.wattwarden.new";
+        let replaced = std::fs::write(tmp, &bytes).is_ok()
+            && std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o755)).is_ok()
+            && std::fs::rename(tmp, INSTALLED_BINARY).is_ok();
+        if !replaced {
+            let _ = std::fs::remove_file(tmp);
+            tracing::warn!(
+                "could not sync {} to {}: installed binary may be stale",
+                current_exe.display(),
+                INSTALLED_BINARY
+            );
         }
     }
 }
@@ -46,6 +59,7 @@ pub fn systemd_unit_text() -> String {
         "[Unit]\n\
          Description=WattWarden Auto Power and Hardware Management Daemon\n\
          After=multi-user.target\n\
+         StartLimitIntervalSec=0\n\
          \n\
          [Service]\n\
          Type=simple\n\
@@ -69,8 +83,16 @@ pub fn install_service() -> Result<(), String> {
 
         std::fs::write(SYSTEMD_UNIT_PATH, content).map_err(|e| e.to_string())?;
         let _ = Command::new("systemctl").arg("daemon-reload").status();
+        // reset-failed: a unit that previously crash-looped stays "failed" and
+        // `enable --now` will not start it again.
+        let _ = Command::new("systemctl")
+            .args(["reset-failed", "wattwarden.service"])
+            .status();
         let _ = Command::new("systemctl")
             .args(["enable", "--now", "wattwarden.service"])
+            .status();
+        let _ = Command::new("systemctl")
+            .args(["restart", "wattwarden.service"])
             .status();
         return Ok(());
     }
@@ -142,14 +164,15 @@ mod tests {
     use super::*;
 
     /// Verifies the systemd unit template configuration,
-    /// including `Restart=always`, `RestartSec=3`, `KillMode=process` and the
-    /// `--daemon` argument.
+    /// including `Restart=always`, `RestartSec=3`, `KillMode=process`,
+    /// `StartLimitIntervalSec=0` and the `--daemon` argument.
     #[cfg(target_os = "linux")]
     #[test]
     fn systemd_unit_text_matches_specification() {
         let expected = "[Unit]\n\
 Description=WattWarden Auto Power and Hardware Management Daemon\n\
 After=multi-user.target\n\
+StartLimitIntervalSec=0\n\
 \n\
 [Service]\n\
 Type=simple\n\

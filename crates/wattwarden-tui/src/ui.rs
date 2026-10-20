@@ -18,9 +18,10 @@ const ASCII_LOGO: &[&str] = &[
 
 const BLOCKS: [char; 9] = [' ', ' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-/// Minimum terminal the dashboard lays out for; below this only the notice shows.
-const MIN_WIDTH: usize = 60;
-const MIN_HEIGHT: usize = 14;
+/// Compact header used whenever the full banner cannot fit.
+const TITLE: &str = "WATTWARDEN";
+const BANNER_W: usize = 68;
+const BANNER_H: usize = 6;
 
 /// Summary line format across all platforms, displaying OS, battery status, time estimate, and wattage.
 fn summary_line(os: &str, battery_pct: u8, charging: bool, est: &str, watts: f64) -> String {
@@ -38,6 +39,28 @@ fn set_str(buf: &mut Buffer, x: usize, y: usize, text: &str, style: Style) {
     let avail = w - x;
     let clipped: String = text.chars().take(avail).collect();
     buf.set_string(x as u16, y as u16, clipped, style);
+}
+
+/// A rectangular block of the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+}
+
+/// Where every block goes for a given terminal size. Valid for **any** `w`/`h`:
+/// blocks are dropped — never stretched past the screen — when they cannot fit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    /// 6-row logo, or a 1-row title on smaller terminals.
+    pub banner: Option<Region>,
+    pub summary_y: Option<usize>,
+    pub menu: Region,
+    /// Plot area (its caption and axis rows sit outside this region).
+    pub graph: Option<Region>,
+    pub footer_y: Option<usize>,
 }
 
 /// Upper bound of the wattage axis: the smallest "nice" ceiling that fits the
@@ -60,24 +83,121 @@ pub fn graph_scale(peak_watts: f64) -> f64 {
         .unwrap_or(*STEPS.last().expect("non-empty"))
 }
 
-/// Vertical stacking of the content region: the plot takes a share of the rows
-/// (never more than half, never less than 3), the menu keeps the rest. The
-/// `+ 2` covers the plot's title and axis rows. Below the smallest stack
-/// (plot + caption + axis + one menu row) the plot is dropped: `(0, h)`.
+/// Vertical stacking of the content region: caption + plot + axis + one blank
+/// row (scroll indicator) above the menu. The plot takes up to half the rows
+/// (never more than 20, never fewer than 3); below 7 rows there is no plot.
+/// Returns `(plot_h, menu_h)` and tiles the rows exactly.
 fn split_vertical(content_h: usize) -> (usize, usize) {
-    if content_h < 6 {
-        return (0, content_h.max(1));
+    if content_h < 7 {
+        return (0, content_h);
     }
-    let raw = if content_h >= 24 {
+    let raw = if content_h >= 26 {
         (content_h / 2).min(20)
-    } else if content_h >= 14 {
+    } else if content_h >= 16 {
         content_h / 3
     } else {
         content_h / 4
     };
-    let graph_h = raw.clamp(3, content_h.saturating_sub(3));
-    let menu_h = content_h.saturating_sub(graph_h + 2).max(1);
+    let graph_h = raw.clamp(3, content_h.saturating_sub(4));
+    let menu_h = content_h.saturating_sub(graph_h + 3);
     (graph_h, menu_h)
+}
+
+/// Computes where everything goes. Pure and total: no size is ever rejected.
+pub fn layout(w: usize, h: usize) -> Layout {
+    let mut y = 0usize;
+
+    let banner = if w >= 72 && h >= 28 {
+        y = 1;
+        let region = Region {
+            x: (w - BANNER_W) / 2,
+            y: 1,
+            w: BANNER_W,
+            h: BANNER_H,
+        };
+        y += BANNER_H + 1;
+        Some(region)
+    } else if w >= 16 && h >= 4 {
+        y = 1;
+        let region = Region {
+            x: (w - TITLE.len()) / 2,
+            y: 1,
+            w: TITLE.len(),
+            h: 1,
+        };
+        y += 2;
+        Some(region)
+    } else {
+        None
+    };
+
+    let summary_y = if w >= 24 && h >= y + 3 {
+        let sy = y;
+        y += 2;
+        Some(sy)
+    } else {
+        None
+    };
+
+    let footer_y = if h >= 3 { Some(h - 1) } else { None };
+    let bottom = footer_y.map(|f| f.saturating_sub(1)).unwrap_or(h);
+    let content_h = bottom.saturating_sub(y);
+
+    let (menu, graph) = if w >= 110 && content_h >= 5 {
+        // Side by side: the menu keeps a readable column and the plot takes
+        // the rest — both grow with the terminal.
+        let menu_w = (w * 45 / 100).clamp(44, 72);
+        let gx = 2 + menu_w + 2;
+        let gw = w.saturating_sub(gx + 2);
+        let gh = content_h.saturating_sub(2);
+        let graph = (gw >= 34 && gh >= 3).then_some(Region {
+            x: gx,
+            y,
+            w: gw,
+            h: gh,
+        });
+        let menu = if graph.is_some() {
+            Region {
+                x: 2,
+                y,
+                w: menu_w,
+                h: content_h,
+            }
+        } else {
+            Region {
+                x: 2,
+                y,
+                w: w.saturating_sub(4),
+                h: content_h,
+            }
+        };
+        (menu, graph)
+    } else {
+        // Stacked: plot above (caption/axis/blank), menu below.
+        let (plot_h, menu_h) = split_vertical(content_h);
+        let graph = (plot_h >= 3 && w >= 40).then_some(Region {
+            x: 2,
+            y,
+            w: w.saturating_sub(4),
+            h: plot_h,
+        });
+        let menu_y = if graph.is_some() { y + plot_h + 3 } else { y };
+        let menu = Region {
+            x: 2,
+            y: menu_y,
+            w: w.saturating_sub(4),
+            h: menu_h,
+        };
+        (menu, graph)
+    };
+
+    Layout {
+        banner,
+        summary_y,
+        menu,
+        graph,
+        footer_y,
+    }
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -86,95 +206,62 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let w = area.width as usize;
     let h = area.height as usize;
-
-    if w < MIN_WIDTH || h < MIN_HEIGHT {
-        let msg = format!("PLEASE RESIZE TERMINAL (Minimum size: {MIN_WIDTH}x{MIN_HEIGHT})");
-        let msg_x = (w.saturating_sub(msg.len())) / 2;
-        let msg_y = h / 2;
-        let style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-        set_str(f.buffer_mut(), msg_x, msg_y, &msg, style);
-        return;
-    }
+    let l = layout(w, h);
 
     let buf = f.buffer_mut();
     let title_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    // 1. Header: full banner when it fits, compact title otherwise.
-    let mut y = 1;
-    if h >= 28 && w >= 72 {
-        let art_x = w.saturating_sub(68) / 2;
-        for (i, line) in ASCII_LOGO.iter().enumerate() {
-            set_str(buf, art_x, y + i, line, title_style);
+    // 1. Header: full banner or compact title, whichever fits.
+    if let Some(b) = l.banner {
+        if b.h >= BANNER_H {
+            for (i, line) in ASCII_LOGO.iter().enumerate() {
+                set_str(buf, b.x, b.y + i, line, title_style);
+            }
+        } else {
+            set_str(buf, b.x, b.y, TITLE, title_style);
         }
-        y += ASCII_LOGO.len() + 1;
-    } else {
-        let title = "WATTWARDEN";
-        let tx = w.saturating_sub(title.len()) / 2;
-        set_str(buf, tx, y, title, title_style);
-        y += 2;
     }
 
     // 2. Centered status summary line.
-    let summary = summary_line(
-        app.backend.os_name(),
-        app.backend.battery.battery_percentage().unwrap_or(0),
-        app.backend.battery.is_charging().unwrap_or(false),
-        &app.backend
-            .battery
-            .time_remaining()
-            .unwrap_or_else(|_| "N/A".into()),
-        app.backend.battery.consumption_watts().unwrap_or(0.0),
-    );
-    let info_x = w.saturating_sub(summary.len()) / 2;
-    set_str(
-        buf,
-        info_x,
-        y,
-        &summary,
-        Style::default().add_modifier(Modifier::BOLD),
-    );
-    y += 2;
-
-    // 3. Content budget: everything up to one row above the footer.
-    let content_h = h.saturating_sub(1).saturating_sub(y);
-    let is_horizontal = w >= 110;
-
-    let (menu_x, menu_y, menu_w, menu_h, graph_x, graph_y, graph_w, graph_h) = if is_horizontal {
-        let menu_w = (w / 2).clamp(40, 52);
-        let menu_x = 2;
-        let graph_x = menu_x + menu_w + 2;
-        let graph_w = w.saturating_sub(graph_x + 2);
-        // Plot + title + axis need at least 34 columns to be readable.
-        let (graph_w, graph_h) = if graph_w >= 34 {
-            (graph_w, content_h.saturating_sub(2))
-        } else {
-            (0, 0)
-        };
-        (menu_x, y, menu_w, content_h, graph_x, y, graph_w, graph_h)
-    } else {
-        let (plot_h, menu_h) = split_vertical(content_h);
-        let menu_w = w.saturating_sub(4);
-        // Without a plot the menu starts at the top of the content region.
-        let menu_y = if plot_h >= 3 { y + plot_h + 2 } else { y };
-        (2, menu_y, menu_w, menu_h, 2, y, w.saturating_sub(4), plot_h)
-    };
-
-    // 4. Real-time power plot (adaptive wattage scale).
-    if graph_h >= 3 && graph_w >= 34 {
-        draw_graph_block(buf, app, graph_x, graph_y, graph_w, graph_h);
+    if let Some(sy) = l.summary_y {
+        let summary = summary_line(
+            app.backend.os_name(),
+            app.backend.battery.battery_percentage().unwrap_or(0),
+            app.backend.battery.is_charging().unwrap_or(false),
+            &app.backend
+                .battery
+                .time_remaining()
+                .unwrap_or_else(|_| "N/A".into()),
+            app.backend.battery.consumption_watts().unwrap_or(0.0),
+        );
+        let info_x = w.saturating_sub(summary.chars().count()) / 2;
+        set_str(
+            buf,
+            info_x,
+            sy,
+            &summary,
+            Style::default().add_modifier(Modifier::BOLD),
+        );
     }
 
-    // 5. Menu with viewport scrolling and scrollbar.
-    draw_menu(buf, app, menu_x, menu_y, menu_w, menu_h);
+    // 3. Real-time power plot (adaptive wattage scale).
+    if let Some(g) = l.graph {
+        draw_graph_block(buf, app, g.x, g.y, g.w, g.h);
+    }
 
-    // 6. Toast popup (if active).
+    // 4. Menu with viewport scrolling and scrollbar.
+    if l.menu.h >= 1 {
+        draw_menu(buf, app, l.menu.x, l.menu.y, l.menu.w, l.menu.h);
+    }
+
+    // 5. Toast popup (if active).
     if let Some((msg, time)) = &app.toast {
         if time.elapsed() < Duration::from_secs(3) {
             let toast_str = format!(" {} ", msg);
-            let toast_x = w.saturating_sub(toast_str.len()) / 2;
-            let toast_y = h.saturating_sub(3);
+            let toast_x = w.saturating_sub(toast_str.chars().count()) / 2;
+            let toast_y = if h >= 3 { h - 3 } else { h.saturating_sub(1) };
             set_str(
                 buf,
                 toast_x,
@@ -188,24 +275,27 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // 7. Extreme mode confirmation modal.
+    // 6. Extreme mode confirmation modal.
     if app.confirm_extreme {
         draw_extreme_modal(buf, w, h);
     }
 
-    // 8. Footer controls help.
-    let footer_text =
-        "[UP/DOWN] Navigate | [L/R] Adjust | [ENTER] Apply | [R] Restore | [+/-] Speed | [Q] Quit";
-    set_str(
-        buf,
-        2,
-        h.saturating_sub(1),
-        footer_text,
-        Style::default().fg(Color::DarkGray),
-    );
+    // 7. Footer controls help.
+    if let Some(fy) = l.footer_y {
+        let footer_text = "[UP/DOWN] Navigate | [L/R] Adjust | [ENTER] Apply | [R] Restore | \
+                          [+/-] Speed | [Q] Quit";
+        set_str(
+            buf,
+            2,
+            fy,
+            footer_text,
+            Style::default().fg(Color::DarkGray),
+        );
+    }
 }
 
-/// Power plot block: one caption row, the bars, the axis and the watt scale.
+/// Power plot block: caption row, the bars, the axis and the watt scale.
+/// `h` is the plot height; the caption and axis rows sit outside it.
 fn draw_graph_block(buf: &mut Buffer, app: &mut App, x: usize, y: usize, w: usize, h: usize) {
     let data = app.history.make_contiguous();
     let peak = data.iter().copied().fold(0.0_f64, f64::max);
@@ -351,6 +441,39 @@ pub(crate) fn format_number(value: i64) -> String {
     }
 }
 
+/// Truncates to `w` chars, marking the cut with `...`.
+fn fit(text: &str, w: usize) -> String {
+    if text.chars().count() <= w {
+        return text.to_string();
+    }
+    if w <= 3 {
+        return text.chars().take(w).collect();
+    }
+    let mut out: String = text.chars().take(w - 3).collect();
+    out.push_str("...");
+    out
+}
+
+/// One menu row fitted to exactly `menu_w` columns: marker + name + value.
+/// Fields shrink before anything may overflow, so every row fits at any width.
+pub fn menu_line(menu_w: usize, prefix: &str, name: &str, value: &str) -> String {
+    if menu_w == 0 {
+        return String::new();
+    }
+    let val_w = (menu_w / 3).clamp(5, 15).min(menu_w.saturating_sub(1));
+    let pref_w = prefix.chars().count().min(menu_w);
+    let name_w = menu_w.saturating_sub(pref_w + val_w + 1).max(1);
+    let line = format!(
+        "{}{:<name_w$} {:>val_w$}",
+        prefix,
+        fit(name, name_w),
+        fit(value, val_w),
+        name_w = name_w,
+        val_w = val_w
+    );
+    line.chars().take(menu_w).collect()
+}
+
 fn draw_menu(
     buf: &mut Buffer,
     app: &mut App,
@@ -359,7 +482,7 @@ fn draw_menu(
     menu_w: usize,
     menu_h: usize,
 ) {
-    let visible_items = menu_h.max(1);
+    let visible_items = menu_h;
 
     // Dynamic scroll bounds
     if app.selected < app.scroll_offset {
@@ -371,7 +494,7 @@ fn draw_menu(
 
     // Scroll up indicator
     if app.scroll_offset > 0 {
-        let msg = " ▲ SCROLL UP FOR MORE OPTIONS ▲ ";
+        let msg = " ▲ MORE ABOVE ▲ ";
         let msg_x = menu_x + (menu_w.saturating_sub(msg.len())) / 2;
         set_str(
             buf,
@@ -399,7 +522,7 @@ fn draw_menu(
                 buf,
                 menu_x,
                 y,
-                header_title,
+                &fit(header_title, menu_w),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -407,39 +530,16 @@ fn draw_menu(
             continue;
         }
 
-        let max_name_len = menu_w.saturating_sub(20).max(5);
-        let truncated_name = if row.name.chars().count() > max_name_len {
-            format!(
-                "{}...",
-                row.name
-                    .chars()
-                    .take(max_name_len.saturating_sub(3))
-                    .collect::<String>()
-            )
-        } else {
-            row.name.clone()
-        };
-
         let is_selected = idx == app.selected;
-        let line_text = format!(
-            " > {:<width$} {:>15} ",
-            truncated_name,
-            row.value,
-            width = max_name_len
-        );
-        let normal_text = format!(
-            "   {:<width$} {:>15} ",
-            truncated_name,
-            row.value,
-            width = max_name_len
-        );
+        let prefix = if is_selected { " > " } else { "   " };
+        let line = menu_line(menu_w, prefix, &row.name, &row.value);
 
         if is_selected {
             set_str(
                 buf,
                 menu_x,
                 y,
-                &line_text,
+                &line,
                 Style::default()
                     .fg(Color::Blue)
                     .bg(Color::White)
@@ -450,19 +550,13 @@ fn draw_menu(
                 buf,
                 menu_x,
                 y,
-                &normal_text,
+                &line,
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             );
         } else {
-            set_str(
-                buf,
-                menu_x,
-                y,
-                &normal_text,
-                Style::default().fg(Color::White),
-            );
+            set_str(buf, menu_x, y, &line, Style::default().fg(Color::White));
         }
     }
 
@@ -496,7 +590,7 @@ fn draw_menu(
 
     // Scroll down indicator
     if app.scroll_offset + visible_items < app.items.len() {
-        let msg = " ▼ SCROLL DOWN FOR MORE OPTIONS ▼ ";
+        let msg = " ▼ MORE BELOW ▼ ";
         let msg_x = menu_x + (menu_w.saturating_sub(msg.len())) / 2;
         set_str(
             buf,
@@ -511,8 +605,8 @@ fn draw_menu(
 }
 
 fn draw_extreme_modal(buf: &mut Buffer, w: usize, h: usize) {
-    let box_w = 62;
-    let box_h = 9;
+    let box_w = 62.min(w).max(3);
+    let box_h = 9.min(h).max(1);
     let box_x = (w.saturating_sub(box_w)) / 2;
     let box_y = (h.saturating_sub(box_h)) / 2;
 
@@ -577,6 +671,9 @@ fn draw_extreme_modal(buf: &mut Buffer, w: usize, h: usize) {
     ];
 
     for (row_offset, text, style) in lines {
+        if row_offset >= box_h {
+            continue;
+        }
         let mut text_x = box_x + (box_w.saturating_sub(text.chars().count())) / 2;
         if row_offset == 1 {
             // Shift warning title by one column to compensate for emoji width.
@@ -651,27 +748,122 @@ mod tests {
         }
     }
 
-    /// The vertical stack always gives the plot room and the menu the rest.
+    /// The vertical stack gives the plot room, the menu the rest, and tiles
+    /// the rows exactly (caption + plot + axis + blank + menu).
     #[test]
     fn split_vertical_reserves_plot_and_menu_rows() {
-        for content_h in 6..=60 {
+        for content_h in 7..=60 {
             let (graph_h, menu_h) = split_vertical(content_h);
             assert!(graph_h >= 3, "plot needs at least 3 rows ({content_h})");
             assert!(menu_h >= 1, "menu needs at least 1 row ({content_h})");
-            assert!(
-                graph_h + 2 + menu_h <= content_h,
-                "rows must fit: content={content_h} graph={graph_h} menu={menu_h}"
+            assert_eq!(
+                graph_h + 3 + menu_h,
+                content_h,
+                "rows must tile exactly: content={content_h}"
             );
         }
         // No room for the plot at all: the menu gets everything.
-        for content_h in 1..6 {
+        for content_h in 0..7 {
             let (graph_h, menu_h) = split_vertical(content_h);
             assert_eq!(graph_h, 0);
             assert_eq!(menu_h, content_h);
         }
         // Roomy terminals give the plot a real share.
-        let (graph_h, menu_h) = split_vertical(40);
-        assert_eq!((graph_h, menu_h), (20, 18));
+        assert_eq!(split_vertical(40), (20, 17));
+    }
+
+    /// Everything stays inside the screen at EVERY size, blocks never overlap,
+    /// and no size is ever rejected — the dashboard is fully responsive.
+    #[test]
+    fn layout_fits_every_terminal_size() {
+        for w in 4..=240usize {
+            for h in 2..=80usize {
+                let l = layout(w, h);
+
+                let inside = |r: Region| r.x + r.w <= w && r.y + r.h <= h;
+                if let Some(b) = l.banner {
+                    assert!(inside(b), "banner outside {w}x{h}: {b:?}");
+                }
+                if let Some(g) = l.graph {
+                    assert!(inside(g), "graph outside {w}x{h}: {g:?}");
+                }
+                assert!(inside(l.menu), "menu outside {w}x{h}: {:?}", l.menu);
+                if let Some(fy) = l.footer_y {
+                    assert_eq!(fy, h - 1);
+                    assert!(l.menu.y + l.menu.h <= fy, "menu overlaps footer at {w}x{h}");
+                }
+                if let Some(g) = l.graph {
+                    if g.y == l.menu.y {
+                        // Side by side: columns must not overlap.
+                        assert!(
+                            g.x >= l.menu.x + l.menu.w,
+                            "side-by-side blocks overlap at {w}x{h}"
+                        );
+                    } else {
+                        // Stacked: caption/axis/blank rows must clear the menu.
+                        assert!(
+                            g.y + g.h + 3 <= l.menu.y,
+                            "stacked plot overlaps menu at {w}x{h}"
+                        );
+                    }
+                }
+                if let Some(sy) = l.summary_y {
+                    assert!(sy < h);
+                }
+            }
+        }
+    }
+
+    /// A comfortable terminal shows every section.
+    #[test]
+    fn layout_shows_everything_at_typical_sizes() {
+        for (w, h) in [
+            (60usize, 14usize),
+            (80, 24),
+            (100, 30),
+            (130, 40),
+            (200, 60),
+        ] {
+            let l = layout(w, h);
+            assert!(l.banner.is_some(), "{w}x{h} must show a header");
+            assert!(l.summary_y.is_some(), "{w}x{h} must show telemetry");
+            assert!(l.graph.is_some(), "{w}x{h} must show the power plot");
+            assert!(l.menu.h > 0, "{w}x{h} must show menu rows");
+            assert!(l.footer_y.is_some(), "{w}x{h} must show the footer");
+        }
+        // Wide terminals go side by side.
+        let wide = layout(130, 40);
+        assert!(wide.graph.expect("plot").x >= wide.menu.x + wide.menu.w);
+    }
+
+    /// Menu rows fit their column at any width: never overflow, never empty.
+    #[test]
+    fn menu_line_fits_any_width() {
+        for menu_w in 1..=80usize {
+            for (name, value) in [
+                ("Charge Limit", "[80%]"),
+                ("⚡ Performance Mode", "[EXECUTE]"),
+                ("Autosuspend PCI/USB", "[ACTIVE]"),
+                ("CPU Freq (MHz)", "[N/A]"),
+            ] {
+                for prefix in [" > ", "   "] {
+                    let line = menu_line(menu_w, prefix, name, value);
+                    assert!(
+                        line.chars().count() <= menu_w,
+                        "row overflow at width {menu_w}: {line:?}"
+                    );
+                }
+            }
+        }
+        // Golden: a comfortable width keeps name and value apart.
+        assert_eq!(
+            menu_line(40, " > ", "Charge Limit", "[80%]"),
+            " > Charge Limit                    [80%]"
+        );
+        // Narrow: the name gives way before the value does.
+        let narrow = menu_line(12, " > ", "Autosuspend PCI/USB", "[ACTIVE]");
+        assert!(narrow.chars().count() <= 12);
+        assert!(narrow.contains('A'), "value must survive the squeeze");
     }
 
     /// `set_str` clips instead of overflowing the buffer.
@@ -684,5 +876,49 @@ mod tests {
             .map(|x| buf.cell((x, 0u16)).unwrap().symbol().to_string())
             .collect();
         assert_eq!(line, "      OVER");
+    }
+
+    /// Render smoke test: drawing the full dashboard never panics and never
+    /// shows a "resize" wall at any size — the layout adapts instead.
+    #[test]
+    fn render_smoke_at_every_size_never_panics() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let backend = wattwarden_platform::PlatformBackend::new().expect("backend");
+        let config = Config::load_or_default(None);
+        let mut app = App::new(backend, config);
+
+        for (w, h) in [
+            (20u16, 5u16),
+            (30, 8),
+            (40, 10),
+            (50, 12),
+            (60, 14),
+            (70, 20),
+            (80, 24),
+            (100, 30),
+            (110, 35),
+            (130, 40),
+            (180, 50),
+            (240, 60),
+            (12, 3),
+            (45, 7),
+            (72, 28),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
+            terminal
+                .draw(|f| draw(f, &mut app))
+                .unwrap_or_else(|e| panic!("draw failed at {w}x{h}: {e}"));
+            let buf = terminal.backend().buffer();
+            let text: String = buf
+                .content()
+                .iter()
+                .map(|c| c.symbol().to_string())
+                .collect();
+            assert!(
+                !text.contains("RESIZE"),
+                "no resize wall allowed at {w}x{h}"
+            );
+        }
     }
 }

@@ -510,7 +510,7 @@ impl DaemonRunner {
         }
     }
 
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         self.pid_mgr.acquire()?;
         info!(
             "WattWarden daemon started successfully with PID {}",

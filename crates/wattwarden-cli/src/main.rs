@@ -67,10 +67,19 @@ fn start_background_daemon() -> Result<(), String> {
     {
         if Path::new("/etc/systemd/system/wattwarden.service").exists() {
             let _ = Command::new("systemctl")
+                .args(["reset-failed", "wattwarden.service"])
+                .status();
+            let _ = Command::new("systemctl")
                 .args(["restart", "wattwarden.service"])
                 .status();
-            if daemon_active() {
-                return Ok(());
+            // The unit starts asynchronously: wait for it to take the instance
+            // lock before considering a detached spawn (two daemons would
+            // otherwise fight over it).
+            for _ in 0..20 {
+                if daemon_active() {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
     }
@@ -81,8 +90,7 @@ fn start_background_daemon() -> Result<(), String> {
 
     // Spawn detached daemon process with stdio redirected to /var/log/wattwarden.log
     // so the child process never writes on the caller's terminal.
-    let _ = spawn::spawn_detached_daemon();
-    Ok(())
+    spawn::spawn_detached_daemon().map_err(|e| e.to_string())
 }
 
 /// Stops the background daemon process or system service.
@@ -98,14 +106,21 @@ fn stop_background_daemon() {
             .status();
     }
 
-    let pid = PidManager::new();
-    if let Some(p) = pid.read_pid() {
+    let pid_mgr = PidManager::new();
+    if let Some(p) = pid_mgr.read_pid() {
         let _ = nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(p),
             nix::sys::signal::Signal::SIGTERM,
         );
     }
-    pid.release();
+    // Wait for the instance lock to clear so an immediate restart cannot race
+    // the old daemon (the lock frees at process death, zombie or not).
+    for _ in 0..30 {
+        if !pid_mgr.is_running() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Builds the backend, degrading gracefully instead of aborting the process

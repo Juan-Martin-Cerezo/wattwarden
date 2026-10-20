@@ -7,6 +7,11 @@ use wattwarden_core::{ChargeThreshold, Result, WattWardenError};
 pub struct ThresholdNode {
     pub end: PathBuf,
     pub start: Option<PathBuf>,
+    /// Dell & co: `charge_types` selects the EC charging mode. User
+    /// thresholds only bind in `Custom` mode — in `Adaptive`/`Standard` the
+    /// firmware manages charging itself and silently ignores them (this is
+    /// what made the limit "not work" on the Dell G15 despite clean writes).
+    pub types: Option<PathBuf>,
 }
 
 /// End-threshold file names, in driver-precedence order.
@@ -21,6 +26,13 @@ const END_SUFFIXES: &[&str] = &[
 
 /// Paired start-threshold file (the kernel rejects `end <= start`).
 const START_SUFFIX: &str = "charge_control_start_threshold";
+
+/// Charge-mode selector (`Trickle Fast Standard Adaptive Custom`, current
+/// mode in brackets). Present on Dell and several other vendors.
+const TYPES_SUFFIX: &str = "charge_types";
+
+/// The mode in which vendor firmware honours user charge thresholds.
+const TYPES_CUSTOM: &str = "Custom";
 
 /// Platform-driver direct paths (ASUS / Huawei), outside the power_supply tree.
 const DIRECT_END_PATHS: &[&str] = &[
@@ -49,11 +61,13 @@ impl LinuxChargeThreshold {
 
     pub fn with_path(threshold_path: Option<PathBuf>) -> Self {
         let fixed = threshold_path.map(|end| {
-            let start = end
-                .parent()
-                .map(|d| d.join(START_SUFFIX))
-                .filter(|p| p.exists());
-            vec![ThresholdNode { end, start }]
+            let dir = end.parent().map(|p| p.to_path_buf());
+            let sibling = |name: &str| dir.as_ref().map(|d| d.join(name)).filter(|p| p.exists());
+            vec![ThresholdNode {
+                end,
+                start: sibling(START_SUFFIX),
+                types: sibling(TYPES_SUFFIX),
+            }]
         });
         Self {
             fixed,
@@ -84,9 +98,11 @@ impl LinuxChargeThreshold {
                 let end = dir.join(suffix);
                 if end.exists() {
                     let start = dir.join(START_SUFFIX);
+                    let types = dir.join(TYPES_SUFFIX);
                     nodes.push(ThresholdNode {
                         end,
                         start: start.exists().then_some(start),
+                        types: types.exists().then_some(types),
                     });
                     break;
                 }
@@ -100,7 +116,11 @@ impl LinuxChargeThreshold {
                     .parent()
                     .map(|d| d.join(START_SUFFIX))
                     .filter(|p| p.exists());
-                nodes.push(ThresholdNode { end, start });
+                let types = end
+                    .parent()
+                    .map(|d| d.join(TYPES_SUFFIX))
+                    .filter(|p| p.exists());
+                nodes.push(ThresholdNode { end, start, types });
             }
         }
 
@@ -111,6 +131,16 @@ impl LinuxChargeThreshold {
     /// threshold would make the kernel reject the write (`end <= start`), the
     /// start is lowered first — the only case where it is touched.
     fn write_node(node: &ThresholdNode, value: u64) -> Result<u64> {
+        // Dell-style ECs only honour the thresholds in `Custom` charging
+        // mode; in `Adaptive` the firmware silently re-manages charging.
+        if let Some(types_path) = &node.types {
+            let current = std::fs::read_to_string(types_path)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if !current.contains(&format!("[{TYPES_CUSTOM}]")) {
+                let _ = std::fs::write(types_path, TYPES_CUSTOM);
+            }
+        }
         if let Some(start_path) = &node.start {
             if matches!(read_sysfs_u64(start_path), Ok(s) if s >= value) {
                 let new_start = value.saturating_sub(5).max(1);
@@ -348,6 +378,41 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(bat1.join("charge_control_end_threshold")).unwrap(),
             "80"
+        );
+
+        let _ = std::fs::remove_dir_all(root.root());
+    }
+
+    /// The Dell G15 regression: in `Adaptive` charging mode the EC ignores
+    /// user thresholds, so setting a limit must switch the battery to
+    /// `Custom` mode first — and stay there when it already is.
+    #[test]
+    fn setting_a_limit_switches_dell_style_charge_types_to_custom() {
+        let root = fake_root("dell", true);
+        let types = root.path("sys/class/power_supply/BAT0/charge_types");
+        std::fs::write(&types, "Trickle Fast Standard [Adaptive] Custom\n").unwrap();
+
+        let thresh = LinuxChargeThreshold::with_root(root.clone());
+        thresh.set_charge_threshold(75).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&types).unwrap().trim(),
+            "Custom",
+            "Adaptive mode would silently ignore the threshold"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                root.path("sys/class/power_supply/BAT0/charge_control_end_threshold")
+            )
+            .unwrap(),
+            "75"
+        );
+
+        // Already custom: the mode file is not rewritten (EC churn).
+        std::fs::write(&types, "Trickle Fast Standard Adaptive [Custom]\n").unwrap();
+        thresh.set_charge_threshold(65).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&types).unwrap().trim(),
+            "Trickle Fast Standard Adaptive [Custom]"
         );
 
         let _ = std::fs::remove_dir_all(root.root());

@@ -33,7 +33,7 @@ In an era where operating systems and software abstractions often obscure direct
 - **Cross-Platform Support**: Native power-management and hardware control backends for Linux (`sysfs`, RAPL, Netlink sockets, Wayland/Hyprland IPC) and macOS (`pmset`, `ioreg`, `sysctl`).
 - **Persistent Background Daemon**: Auto Extreme Mode and Auto-Brightness run continuously in the background as an OS service (`systemd`, `launchd`, or background runner), keeping your power optimized even after closing the terminal or rebooting.
 - **Intelligent Auto-Brightness**: Dynamically adjusts display brightness based on active window context (Terminals vs Browsers/IDEs) and AC charging state, with instant live toggle and manual override.
-- **Live Telemetry & ASCII Power Graph**: Track battery drain in Watts, charge percentage, BMS thresholds, and estimated battery time remaining in real time via an interactive, zero-overhead TUI power graph. The wattage scale adapts to the machine — a 6 W Raspberry Pi and a 100 W gaming laptop each get a graph that fits their own draw — and the whole dashboard reflows to any terminal size.
+- **Live Telemetry & ASCII Power Graph**: Track battery drain in Watts, charge percentage, BMS thresholds, and estimated battery time remaining in real time via an interactive, zero-overhead TUI power graph. The wattage scale adapts to the machine — a 6 W Raspberry Pi and a 100 W gaming laptop each get a graph that fits their own draw — and the dashboard is **fully responsive**: it lays out cleanly at any terminal size, from a 20×5 split pane to a full-screen 4K terminal, with no resize walls.
 - **Zero-Polling Kernel Architecture**: Built in modern Rust without subprocess forks or wasteful sleep loops, achieving virtually 0.00% CPU utilization while idling in the background.
 
 ---
@@ -133,11 +133,17 @@ sudo wattwarden daemon              # Run daemon in foreground (for systemd/laun
 - **Charge ceiling**: `wattwarden charge-limit 80` persists the limit and applies it;
   `charge-limit off` clears WattWarden's setting and *never* touches the hardware threshold
   (it may be managed by the BIOS or another tool). The dashboard's **Charge Limit** row
-  cycles OFF → 55…100 the same way. The limit is built to *always* land: threshold nodes
-  are re-discovered on every attempt (late-appearing batteries included), the paired
-  start threshold is lowered when it would block the write, every write is read back,
-  and without root the command re-runs itself elevated (`sudo`, `pkexec`) or hands the
-  saved limit to the background daemon, which re-asserts it every tick.
+  cycles OFF → 55…100 the same way. The limit is built to *always* land:
+  - on Dell & similar firmware the battery's charging mode is switched to `Custom`
+    (`charge_types`) first — in `Adaptive`/`Standard` mode the EC manages charging
+    itself and silently ignores user thresholds;
+  - threshold nodes are re-discovered on every attempt (late-appearing batteries
+    included), the paired start threshold is lowered only when it would block the
+    write, and every write is read back;
+  - the background daemon re-asserts the ceiling every few seconds, so firmware,
+    the BIOS or another tool cannot quietly take it away;
+  - without root the command re-runs itself elevated (`sudo`, `pkexec`) or hands the
+    saved limit to the daemon — from the TUI or the CLI alike.
 - **macOS**: health metrics come from `ioreg` (`AppleSmartBattery`: full vs design
   capacity, cycles, temperature). The charge ceiling works through the [`bclm`](https://github.com/zackelia/bclm)
   SMC helper when installed (`brew install zackelia/bclm/bclm`) — without it, and for

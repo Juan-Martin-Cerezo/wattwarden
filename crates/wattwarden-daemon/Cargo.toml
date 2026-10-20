@@ -17,4 +17,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["signal", "process"] }
+nix = { workspace = true, features = ["signal", "process", "fs"] }

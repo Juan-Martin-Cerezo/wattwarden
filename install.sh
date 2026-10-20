@@ -108,7 +108,7 @@ else
   else
     # releases/latest first (always current), then pinned fallbacks.
     CANDIDATE_URLS="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}"
-    for TAG in v2.2.0 v2.1.1 v2.1.0; do
+    for TAG in v2.3.0 v2.2.0 v2.1.1; do
       CANDIDATE_URLS="${CANDIDATE_URLS} https://github.com/${REPO}/releases/download/${TAG}/${BINARY_NAME}-${OS_NAME}-${ARCH_NAME}"
     done
     if [ -n "${ALT_ARCH_NAME}" ]; then
